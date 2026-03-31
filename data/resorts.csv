@@ -7,27 +7,27 @@ resort_id,resort_name,latitude,longitude,elevation_base_ft,elevation_summit_ft,v
 6,Buttermilk Ski Area (Aspen),39.205,-106.860556,"7,870","9,900","2,030",44,0.35,0.39,0.26,0,8,435,108,12-13,04-05,https://www.aspensnowmass.com/four-mountains/buttermilk
 7,Chapman Hill Ski Area,37.282939,-107.86848,6568,6876,400,16,0.42,0.3,0.28,0,2,7,7,12-15,03-12,https://www.durangoco.gov/544/Ski-Area
 8,Copper Mountain,39.501667,-106.156389,"9,712","12,313","2,601",157,0.21,0.25,0.36,0.18,23,"2,465",379,11-07,05-10,https://www.coppercolorado.com/
-10,Crested Butte Mountain Resort,38.899722,-106.965,"9,375","12,162","3,055",165,0.14,0.24,0.25,0.37,15,1547,282,11-26,04-05,https://www.skicb.com/
-11,Echo Mountain,39.685,-105.519444,"10,050","10,650",600,13,0.23,0.46,0.3,0,3,226,50,12-21,04-12,https://echomtn.com/
-12,Eldora Mountain Resort,39.9375,-105.583611,"10,600","9,360","1,240",53,0.2,0.5,0.3,0,7,680,680,11-14,04-16,https://www.eldora.com/
-13,Granby Ranch,40.08098,-105.88902,8202,"9,202",1000,43,0.28,0.4,0.32,0,6,406,65,11-26,04-04,https://granbyranch.com/
-14,Hesperus Ski Area,37.297778,-108.055,"8,200","8,888",700,26,0.3,0.2,0.5,0,1,60,0,12-26,03-19,https://www.ski-hesperus.com/
-15,Hoedown Hill,40.452064,-104.931336,"4,774","4,904",130,10,0.375,0.375,0.25,0,4,12,12,01-17,03-15,https://hoedownhill.com/
-16,Howelsen Hill Ski Area,40.483,-106.839,"6,696","7,136",440,19,0.2,0.4,0.4,0,4,50,25,12-06,03-22,https://steamboatsprings.net/131/Howelsen-Hill-Ski-Area
-17,Kendall Mountain,37.79299,-107.62776,"9,313",9596,283,7,0.5,0.4,0.1,0,1,16,0,12-19,03-15,https://www.skikendall.com/
-18,Keystone Resort,39.58188906,-105.9437117,"9,280","12,408","3,138",140,0.12,0.39,0.49,0,21,"3,149",662,11-30,04-15,https://www.keystoneresort.com/
-19,Lake City Ski Hill,38.01097064,-107.3113428,8868,9091,223,6,0.7,0.3,0,0,1,14,0,12-15,03-05,https://www.skilakecity.com/
-20,Lee's Ski Hill,38.01958413,-107.6691788,7887,7959,72,1,1,0,0,0,1,2,0,12-20,02-28,https://www.cityofouray.com/city_offices/city_resources/lee_s_ski_hill.php
-21,Loveland Ski Area,39.68714422,-105.8831373,"10,800","13,010","2,210",94,0.13,0.41,0.46,0,9,1800,240,11-01,05-10,https://skiloveland.com/the-mountain/trail-map-mountain-stats/
-22,Monarch Mountain,38.51213903,-106.3314355,"10,727","11,952","1,225",77,0.19,0.35,0.36,0.1,9,"1,146",40,11-30,04-05,https://skimonarch.com/
-23,Powderhorn Resort,39.06951568,-108.1501532,8200,9850,1650,54,0.2,0.28,0.48,0.04,5,1600,42,12-01,03-20,https://powderhorn.com/
-24,Purgatory Resort,37.62910069,-107.8350697,"8,793","10,822","2,029",107,0.22,0.36,0.27,0.15,11,"1,650",250,11-30,04-20,https://www.purgatory.ski/
-25,Silverton Mountain,38.39789094,-105.2285114,10400,13487,3087,69,0,0,0,1,1,"1,819",0,12-25,04-20,https://silvertonmountain.com/
-26,Ski Cooper,39.36035268,-106.3007905,"10,500","11,700",1200,64,0.19,0.27,0.27,0.27,5,480,0,12-10,03-20,https://www.skicooper.com/
-27,Snowmass,39.19396195,-106.9335731,8100,12510,4406,98,0.05,0.48,0.17,0.3,20,"3,342",656,11-30,04-10,https://www.gosnowmass.com/things-to-do-5/ski-area/stats-dates/
-28,Steamboat Ski Resort,40.4539942,-106.7703976,6900,"10,568","3,668",182,0.12,0.38,0.41,0.09,23,3741,333,11-20,04-20,https://www.steamboat.com
-29,Sunlight Ski Area,39.39994788,-107.3383356,7885,9895,2010,75,0.16,0.29,0.17,0.37,3,730,30,12-15,03-20,https://sunlightmtn.com
-30,Telluride Ski Resort,37.91950233,-107.8324412,"8,725",13150,4425,149,0.16,0.3,0.21,0.34,17,2000,220,12-05,04-05,https://tellurideskiresort.com/ski/
-31,Vail Ski Resort,39.60633449,-106.3549717,"8,120","11,570","3,450",278,0.18,0.29,0.51,0.02,32,5317,461,11-15,04-15,https://www.vail.com/the-mountain/about-the-mountain/mountain-info.aspx
-32,Winter Park Resort,39.89902889,-105.6860359,9000,12060,3060,171,0.23,0.38,0.3,0.09,24,3081,313,10-31,05-17,https://www.winterparkresort.com/
-33,Wolf Creek Ski Area,37.47237367,-106.7922067,10300,11904,1604,133,0.2,0.35,0.25,0.2,11,1600,5,11-20,04-05,https://wolfcreekski.com
+9,Crested Butte Mountain Resort,38.899722,-106.965,"9,375","12,162","3,055",165,0.14,0.24,0.25,0.37,15,1547,282,11-26,04-05,https://www.skicb.com/
+10,Echo Mountain,39.685,-105.519444,"10,050","10,650",600,13,0.23,0.46,0.3,0,3,226,50,12-21,04-12,https://echomtn.com/
+11,Eldora Mountain Resort,39.9375,-105.583611,"10,600","9,360","1,240",53,0.2,0.5,0.3,0,7,680,680,11-14,04-16,https://www.eldora.com/
+12,Granby Ranch,40.08098,-105.88902,8202,"9,202",1000,43,0.28,0.4,0.32,0,6,406,65,11-26,04-04,https://granbyranch.com/
+13,Hesperus Ski Area,37.297778,-108.055,"8,200","8,888",700,26,0.3,0.2,0.5,0,1,60,0,12-26,03-19,https://www.ski-hesperus.com/
+14,Hoedown Hill,40.452064,-104.931336,"4,774","4,904",130,10,0.375,0.375,0.25,0,4,12,12,01-17,03-15,https://hoedownhill.com/
+15,Howelsen Hill Ski Area,40.483,-106.839,"6,696","7,136",440,19,0.2,0.4,0.4,0,4,50,25,12-06,03-22,https://steamboatsprings.net/131/Howelsen-Hill-Ski-Area
+16,Kendall Mountain,37.79299,-107.62776,"9,313",9596,283,7,0.5,0.4,0.1,0,1,16,0,12-19,03-15,https://www.skikendall.com/
+17,Keystone Resort,39.58188906,-105.9437117,"9,280","12,408","3,138",140,0.12,0.39,0.49,0,21,"3,149",662,11-30,04-15,https://www.keystoneresort.com/
+18,Lake City Ski Hill,38.01097064,-107.3113428,8868,9091,223,6,0.7,0.3,0,0,1,14,0,12-15,03-05,https://www.skilakecity.com/
+19,Lee's Ski Hill,38.01958413,-107.6691788,7887,7959,72,1,1,0,0,0,1,2,0,12-20,02-28,https://www.cityofouray.com/city_offices/city_resources/lee_s_ski_hill.php
+20,Loveland Ski Area,39.68714422,-105.8831373,"10,800","13,010","2,210",94,0.13,0.41,0.46,0,9,1800,240,11-01,05-10,https://skiloveland.com/the-mountain/trail-map-mountain-stats/
+21,Monarch Mountain,38.51213903,-106.3314355,"10,727","11,952","1,225",77,0.19,0.35,0.36,0.1,9,"1,146",40,11-30,04-05,https://skimonarch.com/
+22,Powderhorn Resort,39.06951568,-108.1501532,8200,9850,1650,54,0.2,0.28,0.48,0.04,5,1600,42,12-01,03-20,https://powderhorn.com/
+23,Purgatory Resort,37.62910069,-107.8350697,"8,793","10,822","2,029",107,0.22,0.36,0.27,0.15,11,"1,650",250,11-30,04-20,https://www.purgatory.ski/
+24,Silverton Mountain,38.39789094,-105.2285114,10400,13487,3087,69,0,0,0,1,1,"1,819",0,12-25,04-20,https://silvertonmountain.com/
+25,Ski Cooper,39.36035268,-106.3007905,"10,500","11,700",1200,64,0.19,0.27,0.27,0.27,5,480,0,12-10,03-20,https://www.skicooper.com/
+26,Snowmass,39.19396195,-106.9335731,8100,12510,4406,98,0.05,0.48,0.17,0.3,20,"3,342",656,11-30,04-10,https://www.gosnowmass.com/things-to-do-5/ski-area/stats-dates/
+27,Steamboat Ski Resort,40.4539942,-106.7703976,6900,"10,568","3,668",182,0.12,0.38,0.41,0.09,23,3741,333,11-20,04-20,https://www.steamboat.com
+28,Sunlight Ski Area,39.39994788,-107.3383356,7885,9895,2010,75,0.16,0.29,0.17,0.37,3,730,30,12-15,03-20,https://sunlightmtn.com
+29,Telluride Ski Resort,37.91950233,-107.8324412,"8,725",13150,4425,149,0.16,0.3,0.21,0.34,17,2000,220,12-05,04-05,https://tellurideskiresort.com/ski/
+30,Vail Ski Resort,39.60633449,-106.3549717,"8,120","11,570","3,450",278,0.18,0.29,0.51,0.02,32,5317,461,11-15,04-15,https://www.vail.com/the-mountain/about-the-mountain/mountain-info.aspx
+31,Winter Park Resort,39.89902889,-105.6860359,9000,12060,3060,171,0.23,0.38,0.3,0.09,24,3081,313,10-31,05-17,https://www.winterparkresort.com/
+32,Wolf Creek Ski Area,37.47237367,-106.7922067,10300,11904,1604,133,0.2,0.35,0.25,0.2,11,1600,5,11-20,04-05,https://wolfcreekski.com

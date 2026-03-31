@@ -106,10 +106,10 @@ SKI_HOUR_END   <- 16  # 4pm
     mutate(
       temp_f        = temperature_2m * 9 / 5 + 32,
       wind_mph      = windspeed_10m  * 0.621371,
-      depth_in      = snow_depth     * 39.3701,
-      snowfall_in   = snowfall       * 0.393701,  # inches per hour
-      snowfall_mmhr = snowfall       * 10,         # cm/hr → mm/hr (for precip type)
-      precip_mmhr   = precipitation                # mm/hr — already correct units
+      depth_in       = snow_depth     * 39.3701,
+      snowfall_in    = snowfall       * 0.393701,  # inches per hour
+      snowfall_mm_hr = snowfall       * 10,         # cm/hr → mm/hr (for precip type)
+      precip_mm_hr   = precipitation                # mm/hr — already correct units
     )
 }
 
@@ -120,15 +120,9 @@ SKI_HOUR_END   <- 16  # 4pm
 # For a given resort coordinate and first ski day, returns all variables needed
 # by compute_weather_score() and compute_terrain_open_score().
 #
-# Date handling decision:
-#   When a user enters a trip date range (arrival → departure), scoring is
-#   anchored to the FIRST SKI DAY — the first day they will actually be on
-#   the mountain. This is the decision-relevant moment: the user is choosing
-#   where to go, and conditions on day 1 drive that choice. Snow depth and
-#   the 72hr snowfall window are also naturally anchored to arrival.
-#   The caller is responsible for deriving ski_date from user inputs
-#   (e.g., arrival_date if arriving in the morning, arrival_date + 1 if
-#   arriving in the evening).
+# Date handling:
+#   ski_date is the trip date entered by the user. No arrival/departure
+#   distinction is made — scoring is anchored directly to this date.
 #
 # Inputs:
 #   lat           — resort latitude
@@ -137,12 +131,12 @@ SKI_HOUR_END   <- 16  # 4pm
 #   forecast_days — how many days ahead to fetch (default 10, max 16)
 #
 # Aggregation rules over ski hours (SKI_HOUR_START – SKI_HOUR_END):
-#   snow_depth_in    — value at midday (12:00) on ski_date
+#   depth_in         — value at midday (12:00) on ski_date
 #   snowfall_72hr_in — sum of hourly snowfall over 72hrs before ski_date 00:00
 #   temp_f           — mean temperature during ski hours
 #   wind_mph         — max wind speed during ski hours (worst-case for scoring)
-#   precip_mmhr      — max precipitation rate during ski hours
-#   snowfall_mmhr    — mean snowfall rate during ski hours (for precip classifier)
+#   precip_mm_hr     — max precipitation rate during ski hours
+#   snowfall_mm_hr   — mean snowfall rate during ski hours (for precip classifier)
 #
 # Returns:
 #   Named list of weather inputs ready for scoring functions, plus metadata.
@@ -210,19 +204,20 @@ fetch_weather_openmeteo <- function(lat, lon, ski_date, forecast_days = 10) {
     ))
   }
 
-  temp_f        <- mean(ski_hours$temp_f,        na.rm = TRUE)
-  wind_mph      <- max(ski_hours$wind_mph,        na.rm = TRUE)  # worst case
-  precip_mmhr   <- max(ski_hours$precip_mmhr,     na.rm = TRUE)  # worst case
-  snowfall_mmhr <- mean(ski_hours$snowfall_mmhr,  na.rm = TRUE)  # avg for type classification
+  temp_f         <- mean(ski_hours$temp_f,         na.rm = TRUE)
+  wind_mph       <- max(ski_hours$wind_mph,         na.rm = TRUE)  # worst case
+  precip_mm_hr   <- max(ski_hours$precip_mm_hr,    na.rm = TRUE)  # worst case
+  snowfall_mm_hr <- mean(ski_hours$snowfall_mm_hr, na.rm = TRUE)  # avg for type classification
 
   list(
     # Inputs for compute_weather_score() and compute_terrain_open_score()
-    snow_depth_in    = round(snow_depth_in,    1),
+    # Names match scoring function parameters exactly — pass directly with do.call() or by name.
+    depth_in         = round(snow_depth_in,    1),
     snowfall_72hr_in = round(snowfall_72hr_in, 1),
     temp_f           = round(temp_f,           1),
     wind_mph         = round(wind_mph,         1),
-    precip_mmhr      = round(precip_mmhr,      2),
-    snowfall_mmhr    = round(snowfall_mmhr,    2),
+    precip_mm_hr     = round(precip_mm_hr,     2),
+    snowfall_mm_hr   = round(snowfall_mm_hr,   2),
 
     # Metadata (useful for UI and debugging)
     resort_lat       = lat,
