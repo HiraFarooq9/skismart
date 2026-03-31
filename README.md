@@ -42,9 +42,9 @@ R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date
 | Open-Meteo | Snowfall, snow depth, temp, wind forecasts | None | Free |
 | Colorado DOT 511 (cotrip.org) | Road closures, chain laws | Required (register) | Free |
 | CAIC (avalanche.state.co.us) | Avalanche danger by zone | None | Free |
-| OpenRouteService | Driving routes, GeoJSON geometry | Required | Free tier |
+| GraphHopper | Driving routes, distance, duration | Required | Free tier (500 req/day) |
 | Nominatim / OpenStreetMap | Geocode user origin to coordinates | None | Free |
-| Anthropic / OpenAI | LLM synthesis layer | Required | ~$1–2 total |
+| Google Gemini (`gemini-2.0-flash-lite`) | Route conditions LLM summary | Required (AI Studio) | Free tier |
 
 **Design principle:** No data is pre-downloaded or stored statically (except the resort CSV). Every app session fetches live data at runtime.
 
@@ -163,22 +163,33 @@ weather_score = (w_depth * depth_score
 
 ### Terrain Open Score (`R/terrain_open_score.R`)
 
-Estimates what fraction of a skier's preferred terrain is accessible — distinct from weather score which measures condition quality.
+Estimates how much of a skier's preferred terrain is accessible — distinct from weather score which measures condition quality.
+
+**Design (v2):** Scores on **absolute open trail counts**, not percentages. A resort with 50 open trails ranks above one with 7 open trails even if the smaller resort has a higher % open. Raw scores are normalized to 0–1 across all candidate resorts at the orchestration layer.
 
 ```
-trail_score         = sum(tier_open_pct * tier_weight)   [greens, blues, blacks, dbl blacks]
-accessibility_score = trail_score * lift_pct
+open_trails_per_tier = trails_total × tier_share × estimated_pct_open
+weighted_open_count  = sum(open_trails_per_tier × ability_weights)
+raw_score            = weighted_open_count × lift_pct
+
+# After scoring all resorts:
+normalized_score = (raw_score - min) / (max - min)
 ```
 
 **Functions:**
 
 | Function | Purpose |
 |---|---|
-| `get_terrain_pct_by_depth(depth_in)` | Snow depth → base % open per trail tier, piecewise linear |
+| `get_terrain_pct_by_depth(depth_in)` | Snow depth → estimated % open per trail tier, piecewise linear |
 | `apply_snowfall_bump(terrain_pcts, snowfall_72hr_in)` | Fresh snow bonus per tier, respects tier caps |
 | `get_lift_pct(wind_mph)` | Wind speed → estimated % of lifts operating, step function |
 | `get_terrain_weights(ability)` | Returns ability-specific tier weight vector |
-| `compute_terrain_open_score(...)` | Orchestrates into final accessibility score |
+| `compute_terrain_open_score(depth_in, snowfall_72hr_in, wind_mph, ability, trails_total, trail_mix)` | Returns raw ability-weighted open trail count (unnormalised) |
+| `normalize_terrain_scores(raw_scores)` | Scales a named vector of raw scores to 0–1 across all resorts |
+
+**New required inputs to `compute_terrain_open_score()`:**
+- `trails_total` — total trail count from `resorts.csv`
+- `trail_mix` — named vector: `c(greens=0.20, blues=0.40, blacks=0.30, dbl_blacks=0.10)` derived from CSV percentage columns
 
 **Depth → terrain open % (piecewise linear per tier):**
 
@@ -208,11 +219,13 @@ accessibility_score = trail_score * lift_pct
 
 **Key design decisions:**
 
-1. **Tier caps on snowfall bump.** Blacks cap at 90%, double blacks at 70% — operational limits (patrol coverage, grooming capacity) that fresh snow alone cannot overcome.
+1. **Absolute counts over percentages.** A large resort with 50% of 200 trails open (100 trails) outranks a small resort with 70% of 10 trails open (7 trails). Percentages alone distort the score in favor of small resorts.
 
-2. **Lift pct as a multiplier.** Wind-driven closures scale down the entire accessibility score. 40% of lifts running means even fully open terrain is meaningfully less reachable.
+2. **Normalization at the orchestration layer.** Raw scores are trail counts (not 0–1), so `normalize_terrain_scores()` must be called after scoring all resorts to scale relative to the best candidate in the set.
 
-3. **Two-step output.** Both `trail_score` (before wind adjustment) and `accessibility_score` (final) are returned so the UI can explain: *"86% of your terrain is open, but wind is cutting lift access to 70% — effective score: 0.60."*
+3. **Tier caps on snowfall bump.** Blacks cap at 90%, double blacks at 70% — operational limits fresh snow alone cannot overcome.
+
+4. **Lift pct as a multiplier.** Wind-driven closures scale the entire score. 40% of lifts running means even fully open terrain is less reachable.
 
 ---
 
@@ -250,19 +263,50 @@ Fetches and unit-converts live weather data for a resort coordinate. No API key 
 
 ---
 
-### Route Risk Score (Stage 2)
+### Stage 2 — Route Risk Score
 
-For each of the top 3 candidate resorts, 20 points are sampled along the driving route. Each point is scored:
+For each of the top 3 candidate resorts, a driving route is fetched and CDOT road condition data is filtered to the route corridor. Gemini produces a plain-language summary and risk level.
 
+**Pipeline:**
 ```
-risk = w1*(snow forecast)
-     + w2*(closure status)
-     + w3*(avalanche danger)
-     + w4*(elevation)
-     + w5*(vehicle penalty)
+User start address → geocode (Nominatim) → lat/lon
+lat/lon + resort coords → GraphHopper → route geometry + drive time
+Route bbox → CDOT /roadConditions → filtered condition rows
+Filtered rows → Gemini prompt → risk level + summary + key action
+Drive time vs user max → soft penalty applied to resort ranking
 ```
 
-Weights are scaled by user-specified risk tolerance.
+**Modules:**
+
+| File | Purpose |
+|---|---|
+| `R/api_geocode.R` | Geocodes user address/city to lat/lon via Nominatim |
+| `R/api_routing.R` | Fetches driving route from GraphHopper |
+| `R/api_cdot.R` | Fetches CDOT road conditions (one row per condition entry per segment) |
+| `R/route_conditions.R` | Spatial filter + risk level derivation + Gemini prompt builder |
+| `R/llm_route_summary.R` | Calls Gemini, parses structured response |
+
+**CDOT data structure (confirmed from live API):**
+- Single endpoint: `/roadConditions`
+- Each segment has `primaryLatitude/Longitude` + `secondaryLatitude/Longitude` for spatial filtering
+- Conditions nested in `currentConditions[]` — one entry per condition type (forecast, surface, chain law, etc.)
+- `additionalData` field contains free text passed to the LLM
+
+**Gemini output format:**
+```
+RISK_LEVEL: low | moderate | high | do_not_travel
+SUMMARY: 2-3 sentence plain-language description
+KEY_ACTION: single most important driver action, or "None"
+```
+
+**Drive time integration:**
+- Route returns `duration_mins` under normal conditions
+- Compared to user's max drive time input
+- Penalty multiplier applied to resort's final score:
+  - Within max → 1.0 (no penalty)
+  - Up to 20% over → 0.75
+  - More than 20% over → 0.4
+- If all resorts exceed max, drop multipliers and rank by conditions score; LLM communicates the tradeoff
 
 ### Feasibility Rules (Stage 3)
 
@@ -305,6 +349,20 @@ If the top resort is blocked, the app falls back to #2, then #3, and explains ea
 - Curated static resort CSV (`data/resorts.csv`) with ~30 Colorado resorts
 - Established data source inventory and API access plan
 - Initialized repository structure (`data/`, `R/`)
+
+### Session 3 — Stage 2 Routing Pipeline + Terrain Score Fix
+- Built `R/load_env.R` — loads API keys from `.env` file (never committed)
+- Built `R/api_geocode.R` — Nominatim geocoder, no key required, biased toward Colorado
+- Built `R/api_routing.R` — GraphHopper driving route fetch (distance, duration, waypoints)
+- Built `R/api_cdot.R` — CDOT `/roadConditions` integration; confirmed live API field names; one row per condition entry
+- Built `R/route_conditions.R` — spatial corridor filter + keyword-based risk level + Gemini prompt builder
+- Built `R/llm_route_summary.R` — Gemini `gemini-2.0-flash-lite` call; structured response parser
+- Built `tests/test_stage2.R` — interactive section-by-section test script
+- Updated `R/terrain_open_score.R` — switched from % open to absolute open trail counts; added `normalize_terrain_scores()`; `compute_terrain_open_score()` now requires `trails_total` and `trail_mix` parameters
+- Confirmed CDOT has only one working endpoint (`/roadConditions`); `/closures` and `/restrictions` return 404
+- Confirmed GraphHopper as routing provider (ORS account activation issues; OSRM public server unreliable)
+- Confirmed Gemini model: `gemini-2.0-flash-lite` on AI Studio key (free tier)
+- Designed drive time penalty logic: within max → 1.0; up to 20% over → 0.75; >20% over → 0.4; all exceed → rank by conditions, LLM communicates tradeoff
 
 ### Session 2 — Stage 1 Scoring Modules
 - Built `R/weather_score.R` — 7 functions, full weather composite with ability weights

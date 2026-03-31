@@ -219,68 +219,101 @@ get_terrain_weights <- function(ability = c("beginner", "intermediate", "advance
 # 5. COMPOSITE TERRAIN OPEN SCORE
 # -----------------------------------------------------------------------------
 # Combines depth-based terrain availability, snowfall bump, and wind-driven
-# lift restrictions into a single 0–1 accessibility score.
+# lift restrictions into an ability-weighted count of accessible trails.
+#
+# Design change (v2): scores on ABSOLUTE open trail counts, not percentages.
+# A resort with 50 open trails beats one with 7 open trails even if the
+# smaller resort has a higher % open. Normalization to 0–1 happens at the
+# orchestration layer (normalize_terrain_scores) once all resorts are scored,
+# since you need the full distribution to scale correctly.
 #
 # Inputs:
 #   depth_in         — snow base depth in inches
 #   snowfall_72hr_in — 72-hour snowfall accumulation in inches
 #   wind_mph         — wind speed in mph
 #   ability          — "beginner", "intermediate", "advanced", or "expert"
+#   trails_total     — total number of trails at the resort (from resorts.csv)
+#   trail_mix        — named numeric vector of tier proportions from resorts.csv:
+#                      c(greens=0.07, blues=0.20, blacks=0.49, dbl_blacks=0.24)
+#                      Must sum to ~1.0. Names must match exactly.
 #
 # Formula:
-#   trail_score         = sum(tier_open_pct * tier_weight)   for all tiers
-#   accessibility_score = trail_score * lift_pct
+#   open_trails_per_tier = trails_total × trail_mix × estimated_pct_open
+#   weighted_open_count  = sum(open_trails_per_tier × ability_weights)
+#   raw_score            = weighted_open_count × lift_pct
+#   (normalize across resorts with normalize_terrain_scores() to get 0–1)
 #
-# Output:
-#   list with:
-#     $score              — final accessibility score, 0–1
-#     $trail_score        — weighted terrain open score before lift adjustment
-#     $lift_pct           — estimated fraction of lifts operating
-#     $terrain_pcts       — named vector of open % per tier after snowfall bump
-#     $weights            — ability weights used
-#     $warnings           — character vector of active warnings (or NULL)
-#
-# What the score means:
-#   0.0–0.2   Very limited  — few lifts, minimal terrain accessible
-#   0.2–0.4   Restricted    — limited terrain, mostly beginner runs
-#   0.4–0.6   Partial       — solid base terrain, some intermediate open
-#   0.6–0.8   Good access   — most preferred terrain available
-#   0.8–1.0   Full access   — near-complete terrain for your ability level
+# Output: named list with
+#   $raw_score        — ability-weighted open trail count × lift pct (unnormalised)
+#   $open_trails      — named vector of estimated open trail counts per tier
+#   $lift_pct         — estimated fraction of lifts operating
+#   $terrain_pcts     — named vector of estimated % open per tier (post-bump)
+#   $weights          — ability weights used
+#   $warnings         — character vector of active warnings (or NULL)
 # -----------------------------------------------------------------------------
 
 compute_terrain_open_score <- function(depth_in,
                                        snowfall_72hr_in,
                                        wind_mph,
-                                       ability = "intermediate") {
+                                       ability      = "intermediate",
+                                       trails_total,
+                                       trail_mix) {
 
-  # Step 1: base terrain percentages from snow depth
+  expected <- c("greens", "blues", "blacks", "dbl_blacks")
+  if (!all(expected %in% names(trail_mix))) {
+    stop("trail_mix must have names: greens, blues, blacks, dbl_blacks")
+  }
+
+  # Step 1: estimated % of each tier open, based on snow depth
   terrain_pcts <- get_terrain_pct_by_depth(depth_in)
 
-  # Step 2: apply snowfall bump
+  # Step 2: apply fresh snowfall bump
   terrain_pcts <- apply_snowfall_bump(terrain_pcts, snowfall_72hr_in)
 
-  # Step 3: ability weights
+  # Step 3: absolute open trail counts per tier
+  open_trails <- trails_total * trail_mix[expected] * terrain_pcts[expected]
+
+  # Step 4: ability weights
   w <- get_terrain_weights(ability)
 
-  # Step 4: weighted trail score
-  trail_score <- sum(terrain_pcts * w)
+  # Step 5: ability-weighted open trail count
+  weighted_open_count <- sum(open_trails * w)
 
-  # Step 5: lift operating percentage from wind
+  # Step 6: lift operating percentage from wind
   lift_result <- get_lift_pct(wind_mph)
 
-  # Step 6: final accessibility score
-  accessibility_score <- trail_score * lift_result$pct
+  # Step 7: raw score (not yet normalised to 0–1)
+  raw_score <- weighted_open_count * lift_result$pct
 
-  # Collect warnings
   warnings <- lift_result$warning
   warnings <- warnings[!is.null(warnings) & !is.na(warnings) & nchar(warnings) > 0]
 
   list(
-    score        = round(accessibility_score, 3),
-    trail_score  = round(trail_score, 3),
+    raw_score    = round(raw_score, 2),
+    open_trails  = round(open_trails, 1),
     lift_pct     = lift_result$pct,
     terrain_pcts = round(terrain_pcts, 3),
     weights      = w,
     warnings     = if (length(warnings) > 0) warnings else NULL
   )
+}
+
+
+# -----------------------------------------------------------------------------
+# 6. NORMALIZE TERRAIN SCORES ACROSS RESORTS
+# -----------------------------------------------------------------------------
+# Call after computing raw_score for all resorts. Scales to 0–1 relative
+# to the best-scoring resort in the candidate set.
+#
+# Inputs:
+#   raw_scores — named numeric vector: resort_name → raw_score
+#
+# Returns: named numeric vector of normalised scores (0–1)
+# -----------------------------------------------------------------------------
+
+normalize_terrain_scores <- function(raw_scores) {
+  min_s <- min(raw_scores, na.rm = TRUE)
+  max_s <- max(raw_scores, na.rm = TRUE)
+  if (max_s == min_s) return(setNames(rep(1, length(raw_scores)), names(raw_scores)))
+  round((raw_scores - min_s) / (max_s - min_s), 3)
 }
