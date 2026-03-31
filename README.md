@@ -1,6 +1,10 @@
-# SkiSmart
+# SkiSmart — Pipeline Documentation
 
-A web application that helps recreational skiers plan ski trips in Colorado by synthesizing resort conditions, weather forecasts, and road conditions into a single ranked recommendation.
+**Authors:** Hira Farooq & Maren Roether
+**Course:** GLHLTH 562 — Data Science for Global Health
+**Last updated:** 2026-03-31
+
+SkiSmart is a Shiny web application that recommends Colorado ski resorts to recreational skiers based on their preferences, current snow and avalanche conditions, and route safety.
 
 ---
 
@@ -28,9 +32,29 @@ Layer 1 (MVP) covers Stages 1–3 and the dashboard. Layer 2 adds the full route
 
 ---
 
+## Project Structure
+
+```
+final project/
+├── README.md                  # this file
+├── app.R                      # Shiny UI + server (main application entry point)
+├── score_resorts.R            # Stage 1: resort scoring master script
+├── fetch_caic.R               # Stage 1: CAIC avalanche data fetching
+├── R/
+│   ├── weather_score.R        # Stage 1: weather scoring functions (Hira)
+│   ├── terrain_open_score.R   # Stage 1: terrain accessibility scoring (Hira)
+│   └── api_openmeteo.R        # Stage 1: Open-Meteo API fetch layer (Hira)
+├── resorts - clean.csv        # static resort database (33 Colorado resorts)
+├── launch_app.R               # helper: launches app with explicit path (Windows fix)
+├── caic_zone_lookup.R         # (legacy) standalone zone lookup, superseded by fetch_caic.R
+└── debug_caic_api.R           # (dev only) API exploration script, not part of pipeline
+```
+
+---
+
 ## Tech Stack
 
-R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date handling via `lubridate`.
+R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date handling via `lubridate`. Spatial operations via `sf`.
 
 ---
 
@@ -38,10 +62,10 @@ R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date
 
 | Source | Purpose | Key | Cost |
 |---|---|---|---|
-| Static Resort CSV | Base resort attributes (~30 CO resorts) | None | Free |
+| Static Resort CSV | Base resort attributes (33 CO resorts) | None | Free |
 | Open-Meteo | Snowfall, snow depth, temp, wind forecasts | None | Free |
-| Colorado DOT 511 (cotrip.org) | Road closures, chain laws | Required (register) | Free |
 | CAIC (avalanche.state.co.us) | Avalanche danger by zone | None | Free |
+| Colorado DOT 511 (cotrip.org) | Road closures, chain laws | Required (register) | Free |
 | GraphHopper | Driving routes, distance, duration | Required | Free tier (500 req/day) |
 | Nominatim / OpenStreetMap | Geocode user origin to coordinates | None | Free |
 | Google Gemini (`gemini-2.0-flash-lite`) | Route conditions LLM summary | Required (AI Studio) | Free tier |
@@ -50,51 +74,149 @@ R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date
 
 ---
 
-## Static Resort Database
-
-`data/resorts.csv` — manually curated from OnTheSnow, Uncovercolorado, and official resort websites.
-
-**Fields:** resort_id, resort_name, latitude, longitude, elevation_base_ft, elevation_summit_ft, vertical_drop_ft, trails_total, trails_green_pct, trails_blue_pct, trails_black_pct, trails_double_black_pct, lifts_total, total_acres, snowmaking_acres, season_open, season_close, resort_url
-
-Covers ~30 major Colorado resorts. Chosen over live scraping for reliability and reproducibility.
-
----
-
 ## User Inputs
 
 | Input | Type | Notes |
 |---|---|---|
 | Origin city/location | Text | Geocoded via Nominatim |
-| Ski date | Date (YYYY-MM-DD) | The trip date; used directly as the scoring anchor |
-| Skier ability | One of: beginner, intermediate, advanced, expert | Single input per session — not per person |
-| Terrain preferences | TBD | Used in terrain match score (teammate) |
-| Resort vibe | TBD | Used in terrain match score (teammate) |
+| Ski date | Date (YYYY-MM-DD) | Used directly as the scoring anchor |
+| Skier ability | One of: beginner, intermediate, advanced, expert | Single input per session |
+| Terrain preferences | TBD | Used in terrain match score |
+| Resort vibe | TBD | Used in terrain match score |
 | Vehicle type | TBD | Used in route risk scoring |
 | Chains available | Yes/No | Used in feasibility check |
 | Max drive time | Hours | Hard block in feasibility check |
-| Risk tolerance | TBD | Scales route risk weights |
+| Risk tolerance | 0–1 | Scales risk penalty weights |
 | Season pass | None / Ikon / Epic | Used in resort filtering |
 
 ---
 
-## Scoring Logic
+## 1. Data Source Origin
 
-### Stage 1 — Resort Scoring
+### 1a. Static Resort Database
+- **File:** `resorts - clean.csv`
+- **Origin:** Manually compiled from resort websites, OnTheSnow, and Wikipedia
+- **Coverage:** 33 Colorado ski resorts
+- **Key fields:** `resort_id`, `resort_name`, `latitude`, `longitude`, `elevation_base_ft`, `elevation_summit_ft`, `vertical_drop_ft`, `trails_total`, `trails_green_pct`, `trails_blue_pct`, `trails_black_pct`, `trails_double_black_pct`, `lifts_total`, `total_acres`, `snowmaking_acres`, `season_open`, `season_close`
+- **Note:** `resort_id = 9` is intentionally absent (gap in original source data)
 
-Each resort receives a composite score built from four components:
+### 1b. CAIC Avalanche Forecasts
+- **Source:** Colorado Avalanche Information Center (CAIC)
+- **API base:** `https://avalanche.state.co.us/api-proxy/avid`
+- **Auth:** None — free, no API key required
+- **Update frequency:** Once daily
+- **Coverage:** All Colorado backcountry forecast zones
 
-| Component | Owner | Status |
-|---|---|---|
-| Weather score | Hira | Complete |
-| Terrain open score | Hira | Complete |
-| Avalanche / conditions risk score | Teammate | In progress |
-| Terrain match to user ability | Teammate | In progress |
+### 1c. Open-Meteo Weather Forecasts
+- **Source:** Open-Meteo (open-meteo.com)
+- **Auth:** None — free, no API key required
+- **Fields used:** snow depth, 72h snowfall, temperature forecast, precipitation, wind speed
 
-Top 3 resorts by weighted composite advance to route scoring.
+### 1d. User Input
+- **Source:** Shiny UI reactive inputs — `app.R`
+- **Fields:** ski date (up to 10 days ahead), max drive time (hours), ability level, terrain preference, season pass type, risk tolerance
+- **How it works:** All inputs are collected in a named list and passed to `score_resorts(user_inputs)` when the user clicks Find Resorts
 
 ---
 
-### Weather Score (`R/weather_score.R`)
+## 2. Data Ingestion
+
+### 2a. Static Resort Database
+Read at script load time using `readr::read_csv()` in `score_resorts.R`:
+
+```r
+resorts_raw <- read_csv("resorts - clean.csv", col_types = cols(...))
+```
+
+### 2b. CAIC Avalanche API — How We Found the Endpoint
+
+The CAIC API endpoint was not publicly documented. We identified it by inspecting network traffic in the browser (F12 → Network → Fetch/XHR) while loading `https://avalanche.state.co.us/forecasts/backcountry`. This revealed two relevant endpoints:
+
+| Endpoint | Returns | Used for |
+|---|---|---|
+| `/products/all` | JSON array of forecast objects with danger ratings | Danger ratings per zone |
+| `/products/all/area?productType=avalancheforecast&includeExpired=true` | GeoJSON FeatureCollection of zone polygons | Zone boundary shapes for spatial matching |
+
+**Key discovery:** The API does not return human-readable zone names (like "Vail & Summit County") in the forecast objects. Instead, each forecast has an `areaId` hash. The GeoJSON zone polygons carry the same `id` in their properties. Resort coordinates are spatially matched to zone polygons to obtain the `areaId`, which then links each resort to its forecast.
+
+Both calls are made using `httr2::request()` with a 15-second timeout. Results are cached in an R environment (`.caic_cache`) for the duration of the session to avoid redundant API calls on Shiny re-renders.
+
+```r
+# Two API calls regardless of how many resorts are queried
+url_forecasts <- "https://avalanche.state.co.us/api-proxy/avid?_api_proxy_uri=%2Fproducts%2Fall"
+url_polygons  <- "https://avalanche.state.co.us/api-proxy/avid?_api_proxy_uri=%2Fproducts%2Fall%2Farea%3F..."
+```
+
+### 2c. Open-Meteo Weather API
+
+Fetched via `R/api_openmeteo.R` using `httr2`. No API key required. Uses `past_days = 3` to capture the 72-hour snowfall lookback window and `forecast_days = 10` to match the product forecast horizon.
+
+---
+
+## 3. Data Processing
+
+### 3a. Avalanche Data (`fetch_caic.R`)
+
+**Step 1 — Fetch all forecasts**
+`/products/all` returns a JSON array of ~20 forecast objects covering all Colorado zones. Each object contains:
+
+```json
+{
+  "areaId": "38f7df6...",
+  "issueDateTime": "2026-03-30T22:30:00Z",
+  "dangerRatings": {
+    "days": [
+      { "position": 1, "alp": "considerable", "tln": "moderate", "btl": "low", "date": "..." },
+      { "position": 2, "alp": "moderate",      "tln": "low",      "btl": "low", "date": "..." }
+    ]
+  },
+  "avalancheProblems": {
+    "days": [ [{ "name": "Wind Slab" }, { "name": "Storm Slab" }], ... ]
+  }
+}
+```
+
+- `alp` = above treeline (alpine), `tln` = at treeline, `btl` = below treeline
+- `days[1]` = today's forecast, `days[2]` = tomorrow's forecast
+- Ratings are lowercase strings: `"low"`, `"moderate"`, `"considerable"`, `"high"`, `"extreme"`, `"noRating"`
+
+**Step 2 — Fetch zone polygons (GeoJSON)**
+`/products/all/area` returns a GeoJSON FeatureCollection where each feature is a MultiPolygon for one forecast zone. The feature's `properties.id` equals the `areaId` in the forecast objects.
+
+**Step 3 — Spatial join**
+Resort coordinates are converted to `sf` point objects and matched against zone polygons using `sf::st_join(..., join = sf::st_within)`:
+
+```r
+resorts_sf <- sf::st_as_sf(resorts, coords = c("lon", "lat"), crs = 4326)
+joined     <- sf::st_join(resorts_sf, zone_polys["id"], join = sf::st_within, left = TRUE)
+```
+
+**Step 4 — Parse and normalise**
+Each forecast object is parsed by `.parse_forecast()`. Danger rating strings are normalised to title case. The overall danger rating is derived as the highest of the three elevation bands. A numeric encoding (1–5) is added for use in the scoring formula.
+
+**Output schema of `get_avalanche_data_for_resorts()`:**
+
+| Column | Type | Description |
+|---|---|---|
+| `resort_id` | int | matches resort CSV |
+| `resort_name` | chr | |
+| `caic_zone` | chr | human-readable zone name (from hardcoded lookup) |
+| `forecast_date` | date | date forecast was issued |
+| `danger_overall` | chr | highest of the three bands today |
+| `danger_numeric` | int | 1 (Low) – 5 (Extreme), NA for No Rating |
+| `danger_alpine` | chr | above-treeline rating today |
+| `danger_treeline` | chr | at-treeline rating today |
+| `danger_below_treeline` | chr | below-treeline rating today |
+| `danger_tomorrow_overall` | chr | highest band tomorrow |
+| `danger_tomorrow_numeric` | int | 1–5, tomorrow |
+| `danger_tomorrow_alpine` | chr | |
+| `danger_tomorrow_treeline` | chr | |
+| `danger_tomorrow_below_treeline` | chr | |
+| `problem_types` | chr | comma-separated avalanche problem names (today) |
+
+---
+
+### 3b. Weather Score (`R/weather_score.R`)
 
 Scores the quality of skiing conditions on a 0–1 scale.
 
@@ -135,33 +257,28 @@ weather_score = (w_depth * depth_score
 *Fresh snowfall (piecewise linear):*
 - 0" → 0.0 — 1" → 0.1 — 3" → 0.3 — 6" → 0.6 — 12" → 0.9 — 18"+ → 1.0
 
-*Temperature (step function — flat value per band):*
-- < 0°F → 0.5 (extreme cold warning) | 0–15°F → 0.8 | 15–30°F → 1.0 | 30–32°F → 0.7 | 32–35°F → 0.3 | 35°F+ → 0.1
+*Temperature (step function):*
+- < 0°F → 0.5 | 0–15°F → 0.8 | 15–30°F → 1.0 | 30–32°F → 0.7 | 32–35°F → 0.3 | 35°F+ → 0.1
 
-*Wind (step function — flat value per band):*
+*Wind (step function):*
 - < 15 mph → 1.0 | 15–25 → 0.7 | 25–35 → 0.4 | 35–45 → 0.2 | 45+ → 0.05
 
 *Precipitation multiplier:*
 - No precip or snow (temp < 30°F) → 1.0
 - Mixed/sleet (30–34°F) → 0.7
-- Light rain (< 2.5 mm/hr) → 0.6 | Moderate rain (2.5–7.5 mm/hr) → 0.4 | Heavy rain (> 7.5 mm/hr) → 0.2
+- Light rain (< 2.5 mm/hr) → 0.6 | Moderate rain → 0.4 | Heavy rain (> 7.5 mm/hr) → 0.2
 - Override: if snowfall_mm_hr > 5 at 30–34°F, treat as snow (1.0)
 
 **Key design decisions:**
 
-1. **Precipitation as a multiplier, not additive.** Rain can destroy an otherwise good score regardless of depth or fresh snow — a 0.2 multiplier for heavy rain reflects real conditions.
-
-2. **72-hour snowfall window.** Consistent across both the snowfall score and the API lookback (`past_days = 3`).
-
-3. **Snow depth and snowfall use piecewise linear interpolation; temperature and wind use step functions.** Depth and snowfall benefit from smooth transitions (a resort at 35" should score meaningfully better than one at 30"). Temperature and wind bands represent categorically different condition types, so flat values per band are appropriate.
-
-4. **Precipitation type derived from temperature + snowfall rate**, not a separate API field: temp < 30°F → snow; 30–34°F → mixed (unless snowfall_mm_hr > 5, then snow override); > 34°F → rain.
-
-5. **No hard exclude on snow depth.** The original design excluded resorts with < 24" base. Removed after observing that base-lodge coordinates can read 0" while upper mountain is fully operational. Resort operating status is checked separately via `season_open`/`season_close` dates in the CSV (feasibility, Stage 3). Depth purely scores condition quality on a continuous 0–1 scale.
+1. **Precipitation as a multiplier, not additive.** Rain can destroy an otherwise good score regardless of depth or fresh snow.
+2. **72-hour snowfall window.** Consistent with the API lookback (`past_days = 3`).
+3. **Piecewise linear for depth/snowfall; step functions for temperature/wind.** Depth and snowfall benefit from smooth transitions; temperature and wind bands represent categorically different condition types.
+4. **No hard exclude on snow depth.** Resort operating status is checked separately via `season_open`/`season_close` (feasibility, Stage 3). Depth purely scores condition quality on a 0–1 scale.
 
 ---
 
-### Terrain Open Score (`R/terrain_open_score.R`)
+### 3c. Terrain Open Score (`R/terrain_open_score.R`)
 
 Estimates how much of a skier's preferred terrain is accessible — distinct from weather score which measures condition quality.
 
@@ -202,7 +319,7 @@ normalized_score = (raw_score - min) / (max - min)
 | 48" | 100% | 90% | 70% | 40% |
 | 72"+ | 100% | 100% | 90% | 70% |
 
-**Fresh snowfall bump (step function, additive, capped at tier maximums above):**
+**Fresh snowfall bump (step function, additive, capped at tier maximums):**
 - 0–3" → no bump | 3–6" → +5% | 6–12" → +10% | 12"+ → +15%
 
 **Wind → lift operating % (step function):**
@@ -227,20 +344,19 @@ normalized_score = (raw_score - min) / (max - min)
 
 4. **Lift pct as a multiplier.** Wind-driven closures scale the entire score. 40% of lifts running means even fully open terrain is less reachable.
 
+
 ---
 
-### Open-Meteo API Layer (`R/api_openmeteo.R`)
+### 3d. Open-Meteo API Layer (`R/api_openmeteo.R`)
 
 Fetches and unit-converts live weather data for a resort coordinate. No API key required.
-
-**Functions:**
 
 | Function | Purpose |
 |---|---|
 | `fetch_weather_openmeteo(lat, lon, ski_date)` | Fetches all scoring inputs for one resort |
 | `fetch_weather_all_resorts(resorts_df, ski_date)` | Iterates over all resorts, returns named list |
 
-**Output of `fetch_weather_openmeteo()` — naming matches scoring function parameters exactly:**
+**Output fields (naming matches scoring function parameters exactly):**
 
 | Field | Units | Aggregation |
 |---|---|---|
@@ -251,17 +367,69 @@ Fetches and unit-converts live weather data for a resort coordinate. No API key 
 | `precip_mm_hr` | mm/hr | Max over ski hours (worst-case) |
 | `snowfall_mm_hr` | mm/hr | Mean over ski hours (for precip type classification only) |
 
-**Key design decisions:**
+---
 
-1. **`past_days = 3` + `forecast_days = 10`.** The 3-day lookback retrieves the 72hr snowfall window. 10-day forward matches the product forecast horizon.
+### 3e. Terrain Match Score (`score_resorts.R`)
 
-2. **`ski_date` = the trip date entered by the user.** Used directly as the scoring anchor — no arrival/departure distinction.
+Measures how well a resort's trail difficulty distribution matches what is appropriate for the user's ability level.
 
-3. **Wind and precipitation use max over ski hours; temperature uses mean.** Conservative (worst-case) for anything affecting safety or access.
+**Target distributions:**
 
-4. **Error isolation per resort.** `fetch_weather_all_resorts()` returns `list(error = ...)` per failed resort rather than crashing the pipeline.
+| Ability | Green | Blue | Black | Dbl Black |
+|---|---|---|---|---|
+| Beginner | 50% | 40% | 10% | 0% |
+| Intermediate | 10% | 50% | 30% | 10% |
+| Advanced | 0% | 20% | 50% | 30% |
+| Expert | 0% | 10% | 30% | 60% |
+
+**Formula:**
+```
+deviation     = mean(|actual_pct - target_pct|)  across four difficulty bands
+terrain_score = max(0, 100 - deviation × 200)
+```
+
+A perfect match scores 100. A mean deviation of 0.5 (complete mismatch) scores 0.
+
+**Example:** Breckenridge (14% green, 31% blue, 19% black, 36% double black) for an expert user:
+```
+deviation = mean(0.14, 0.21, 0.11, 0.24) = 0.175
+score     = 100 - 0.175 × 200 = 65
+```
 
 ---
+
+### 3f. Conditions Risk Score (`score_resorts.R`)
+
+Converts `danger_numeric` (1–5) to a 0–100 risk penalty, adjusted by user risk tolerance:
+
+```
+base_risk     = (danger_numeric - 1) / 4 × 100
+adjusted_risk = base_risk × (1 - risk_tolerance × 0.4)
+```
+
+A user with high risk tolerance (1.0) reduces the penalty by 40%.
+
+---
+
+### 3g. Composite Score (`score_resorts.R`)
+
+**Current formula** (while weather data is placeholder):
+```
+composite = terrain_score × 0.70 + (100 - risk_score) × 0.30
+```
+
+**Planned formula** once Open-Meteo weather data is integrated:
+```
+composite = snow_score × 0.40 + terrain_score × 0.35 + (100 - risk_score) × 0.25
+```
+
+**Hard blocks** — resorts are removed from ranking entirely if:
+- `danger_numeric >= 4` (High or Extreme avalanche danger)
+- *(planned)* Road closed with no alternate route (CDOT 511)
+- *(planned)* Resort closed for the season
+
+---
+
 
 ### Stage 2 — Route Risk Score
 
@@ -308,7 +476,7 @@ KEY_ACTION: single most important driver action, or "None"
   - More than 20% over → 0.4
 - If all resorts exceed max, drop multipliers and rank by conditions score; LLM communicates the tradeoff
 
-### Feasibility Rules (Stage 3)
+### Stage 3 — Feasibility Rules
 
 **Hard blocks** (resort rejected):
 - Road closed with no alternate
@@ -325,7 +493,31 @@ If the top resort is blocked, the app falls back to #2, then #3, and explains ea
 
 ---
 
-## Output Dashboard
+## 4. Output
+
+### 4a. Pipeline Output (`score_resorts.R`)
+
+`score_resorts()` returns a named list:
+
+| Element | Contents |
+|---|---|
+| `$top` | Top N ranked resorts (default 3) with all scores |
+| `$blocked` | Resorts removed due to hard blocks, with reasons |
+| `$all` | Full scored dataframe for all 33 resorts |
+| `$inputs` | User inputs used for this run |
+| `$timestamp` | When the pipeline was run |
+
+### 4b. Shiny App Output (`app.R`)
+
+The app displays three panels in the main area:
+
+| Panel | Contents |
+|---|---|
+| **Recommended Resorts** | Top 3 ranked resorts: composite score, terrain match, avalanche risk, today/tomorrow danger ratings, problem types, CAIC zone |
+| **Resorts Excluded** | Only shown if any resorts were hard-blocked; lists resort name, danger rating, and reason |
+| **Current Avalanche Conditions** | Full table of all resorts with today/tomorrow ratings, sorted by danger level |
+
+### 4c. Planned Output Dashboard
 
 - **Map** — route colored green/yellow/red by risk; avalanche zone overlays; resort pins with score badges; rejected resorts marked with reason
 - **Recommended resort panel** — score breakdown, estimated terrain open
@@ -333,12 +525,72 @@ If the top resort is blocked, the app falls back to #2, then #3, and explains ea
 - **Flagged route segments**
 - **LLM-generated trip briefing** — plain-language recommendation, safety advisories, gear list calibrated to forecast temperatures
 
+A loading notification appears while the CAIC API is being called. All outputs update only when the user clicks **Find Resorts** (not on every input change), to avoid unnecessary API calls.
+
 ---
 
-## Scope
+## 5. Replication Instructions
 
-- **Geography:** Colorado resorts (initial). Expansion to additional states if time permits.
-- **Forecast horizon:** Up to 10 days (Open-Meteo reliable range; historical climatology as fallback beyond 14 days).
+### Dependencies
+
+```r
+install.packages(c("shiny", "httr2", "dplyr", "purrr", "readr", "lubridate", "sf"))
+```
+
+The `sf` package requires system-level GDAL/GEOS libraries. On Windows these are bundled with the CRAN binary — a standard `install.packages("sf")` is sufficient.
+
+### Running the Shiny App
+
+**Recommended:** Open `app.R` in RStudio and click the **Run App** button in the top-right of the editor pane.
+
+Alternatively, open `launch_app.R` and click **Source** — this sets the working directory explicitly before launching (useful on Windows).
+
+### Running the Scoring Pipeline Directly (Without UI)
+
+```r
+setwd("path/to/final project")
+source("score_resorts.R")
+
+# With default inputs
+result <- score_resorts()
+print(result$top)
+
+# With custom inputs
+result <- score_resorts(user_inputs = list(
+  ability_level   = "expert",
+  max_drive_hours = 3,
+  risk_tolerance  = 0.8
+))
+print(result$top)
+print(result$blocked)
+```
+
+### API Keys
+
+None required for current modules. The CAIC API is free and open. Open-Meteo is also free with no key. Future modules (OpenRouteService, Anthropic/OpenAI) require keys — see proposal for details.
+
+### Cache Behaviour
+
+CAIC data is cached in memory for the R session. To force a fresh API call:
+
+```r
+clear_caic_cache()
+result <- score_resorts()
+```
+
+---
+
+## Pending Modules
+
+| Module | File | Status | Feeds into |
+|---|---|---|---|
+| Weather forecast fetch | `fetch_weather.R` | Not started | `snow_score` in composite |
+| Route risk scoring | — | Not started | Stage 2 |
+| CDOT road conditions | — | Not started | Hard blocks |
+| Departure optimizer | — | Not started | Stage 4 |
+| LLM synthesis | — | Not started | Stage 5 |
+| Leaflet map | `app.R` | Not started | Resort pins, route overlay |
+| Origin city input | `app.R` | Not started | Drive time filtering (needs OpenRouteService) |
 
 ---
 
@@ -346,11 +598,11 @@ If the top resort is blocked, the app falls back to #2, then #3, and explains ea
 
 ### Session 1 — Project Initialization
 - Defined product scope and two-layer architecture
-- Curated static resort CSV (`data/resorts.csv`) with ~30 Colorado resorts
+- Curated static resort CSV (`resorts - clean.csv`) with 33 Colorado resorts
 - Established data source inventory and API access plan
-- Initialized repository structure (`data/`, `R/`)
+- Initialized repository structure
 
-### Session 3 — Stage 2 Routing Pipeline + Terrain Score Fix
+### Session 3 — Stage 2 Routing Pipeline + Terrain Score Fix (Hira)
 - Built `R/load_env.R` — loads API keys from `.env` file (never committed)
 - Built `R/api_geocode.R` — Nominatim geocoder, no key required, biased toward Colorado
 - Built `R/api_routing.R` — GraphHopper driving route fetch (distance, duration, waypoints)
@@ -364,19 +616,21 @@ If the top resort is blocked, the app falls back to #2, then #3, and explains ea
 - Confirmed Gemini model: `gemini-2.0-flash-lite` on AI Studio key (free tier)
 - Designed drive time penalty logic: within max → 1.0; up to 20% over → 0.75; >20% over → 0.4; all exceed → rank by conditions, LLM communicates tradeoff
 
-### Session 2 — Stage 1 Scoring Modules
+### Session 2 — Stage 1 Scoring Modules (Hira)
 - Built `R/weather_score.R` — 7 functions, full weather composite with ability weights
 - Built `R/terrain_open_score.R` — 5 functions, terrain accessibility with lift adjustment
 - Built `R/api_openmeteo.R` — Open-Meteo fetch + unit conversion layer
-- Built `tests/test_scoring.R` — standalone unit + scenario tests (run with `source("tests/test_scoring.R")`)
-- Confirmed tech stack: R/Shiny, tidyverse approved
-- Confirmed single ability input per session (not per person)
-- Confirmed ski_date = trip date entered by user (no arrival/departure split)
+- Built `tests/test_scoring.R` — standalone unit + scenario tests
+- Confirmed: single ability input per session; `ski_date` = trip date entered by user
 - Removed hard exclude on snow depth < 24" — resort open/closed handled by season dates in CSV
-- Removed thin-base rescue clause — fresh snowfall captured independently by `score_snowfall()`
-- Fixed naming consistency: API output field names now match scoring function parameter names exactly
 
-**Next:** Teammate integrates avalanche/conditions risk score and terrain match, then combines all Stage 1 components into the resort ranker.
+### Session 2 — Stage 1 Avalanche + App Scaffold (Maren)
+- Built `fetch_caic.R` — CAIC AVID API fetch with `sf` spatial join to match resorts to zone polygons
+- Built `score_resorts.R` — master Stage 1 scoring script (terrain match + conditions risk + composite)
+- Built `app.R` / `launch_app.R` — Shiny UI skeleton with CAIC danger output panel
+- Identified undocumented CAIC API endpoints via browser network inspection
+
+**Next:** Integrate Hira's weather/terrain-open scores into `score_resorts.R`, then begin Stage 2 route risk.
 
 ---
 
