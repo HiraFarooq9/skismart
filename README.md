@@ -2,7 +2,7 @@
 
 **Authors:** Hira Farooq & Maren Roether
 **Course:** GLHLTH 562 — Data Science for Global Health
-**Last updated:** 2026-03-31
+**Last updated:** 2026-03-31 (Session 4)
 
 SkiSmart is a Shiny web application that recommends Colorado ski resorts to recreational skiers based on their preferences, current snow and avalanche conditions, and route safety.
 
@@ -35,15 +35,28 @@ Layer 1 (MVP) covers Stages 1–3 and the dashboard. Layer 2 adds the full route
 ## Project Structure
 
 ```
-final project/
+skismart/
 ├── README.md                  # this file
-├── app.R                      # Shiny UI + server (main application entry point)
-├── score_resorts.R            # Stage 1: resort scoring master script
+├── app.R                      # Shiny UI + server — full Stage 1 + Stage 2 pipeline
+├── app_demo.R                 # UI demo: dummy resort data, real map routing (for testing)
+├── score_resorts.R            # Stage 1: resort scoring orchestrator
 ├── fetch_caic.R               # Stage 1: CAIC avalanche data fetching
 ├── R/
+│   ├── load_env.R             # loads API keys from .env into Sys.setenv()
 │   ├── weather_score.R        # Stage 1: weather scoring functions (Hira)
-│   ├── terrain_open_score.R   # Stage 1: terrain accessibility scoring (Hira)
-│   └── api_openmeteo.R        # Stage 1: Open-Meteo API fetch layer (Hira)
+│   ├── terrain_open_score.R   # Stage 1: terrain open score — absolute trail counts (Hira)
+│   ├── api_openmeteo.R        # Stage 1: Open-Meteo API fetch layer (Hira)
+│   ├── api_geocode.R          # Stage 2: Nominatim geocoder (Hira)
+│   ├── api_routing.R          # Stage 2: GraphHopper route fetch (Hira)
+│   ├── api_cdot.R             # Stage 2: CDOT /roadConditions fetch (Hira)
+│   ├── route_conditions.R     # Stage 2: spatial filter + per-row risk + LLM prompt (Hira)
+│   ├── llm_route_summary.R    # Stage 2: Groq LLM call + response parser (Hira)
+│   └── stage2_rerank.R        # Stage 2: drive-time penalty + resort reranking (Hira)
+├── tests/
+│   ├── test_scoring.R         # Stage 1 standalone tests
+│   └── test_stage2.R          # Stage 2 section-by-section test script
+├── .env                       # API keys — gitignored, never committed
+├── .env.example               # safe-to-commit key template
 ├── resorts - clean.csv        # static resort database (33 Colorado resorts)
 ├── launch_app.R               # helper: launches app with explicit path (Windows fix)
 ├── caic_zone_lookup.R         # (legacy) standalone zone lookup, superseded by fetch_caic.R
@@ -68,7 +81,7 @@ R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date
 | Colorado DOT 511 (cotrip.org) | Road closures, chain laws | Required (register) | Free |
 | GraphHopper | Driving routes, distance, duration | Required | Free tier (500 req/day) |
 | Nominatim / OpenStreetMap | Geocode user origin to coordinates | None | Free |
-| Google Gemini (`gemini-2.0-flash-lite`) | Route conditions LLM summary | Required (AI Studio) | Free tier |
+| Groq (`llama-3.3-70b-versatile`) | Route conditions LLM summary | Required (console.groq.com) | Free tier, no card |
 
 **Design principle:** No data is pre-downloaded or stored statically (except the resort CSV). Every app session fetches live data at runtime.
 
@@ -78,16 +91,13 @@ R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date
 
 | Input | Type | Notes |
 |---|---|---|
-| Origin city/location | Text | Geocoded via Nominatim |
-| Ski date | Date (YYYY-MM-DD) | Used directly as the scoring anchor |
+| Starting location | Text | City, zip, or address — geocoded via Nominatim |
+| Ski date | Date (YYYY-MM-DD) | Up to 10 days ahead; used as scoring anchor |
 | Skier ability | One of: beginner, intermediate, advanced, expert | Single input per session |
-| Terrain preferences | TBD | Used in terrain match score |
-| Resort vibe | TBD | Used in terrain match score |
-| Vehicle type | TBD | Used in route risk scoring |
-| Chains available | Yes/No | Used in feasibility check |
-| Max drive time | Hours | Hard block in feasibility check |
-| Risk tolerance | 0–1 | Scales risk penalty weights |
+| Terrain preference | groomed / mixed / challenging | Used in terrain match score |
 | Season pass | None / Ikon / Epic | Used in resort filtering |
+| Max drive time | Hours (1–8, step 0.5) | Drive-time penalty applied above this threshold |
+| Risk tolerance | 0–1 slider | Scales avalanche risk penalty weight |
 
 ---
 
@@ -449,23 +459,39 @@ Drive time vs user max → soft penalty applied to resort ranking
 | File | Purpose |
 |---|---|
 | `R/api_geocode.R` | Geocodes user address/city to lat/lon via Nominatim |
-| `R/api_routing.R` | Fetches driving route from GraphHopper |
-| `R/api_cdot.R` | Fetches CDOT road conditions (one row per condition entry per segment) |
-| `R/route_conditions.R` | Spatial filter + risk level derivation + Gemini prompt builder |
-| `R/llm_route_summary.R` | Calls Gemini, parses structured response |
+| `R/api_routing.R` | Fetches driving route from GraphHopper (waypoints, distance, duration, bbox) |
+| `R/api_cdot.R` | Fetches CDOT `/roadConditions` — one row per condition entry per segment |
+| `R/route_conditions.R` | Spatial corridor filter + per-row risk classification + Groq prompt builder |
+| `R/llm_route_summary.R` | Calls Groq (llama-3.3-70b-versatile), parses structured response |
+| `R/stage2_rerank.R` | Drive-time penalty multipliers + reranking across top 3 resorts |
 
 **CDOT data structure (confirmed from live API):**
-- Single endpoint: `/roadConditions`
+- Single working endpoint: `/roadConditions` — `/closures` and `/restrictions` return 404
 - Each segment has `primaryLatitude/Longitude` + `secondaryLatitude/Longitude` for spatial filtering
 - Conditions nested in `currentConditions[]` — one entry per condition type (forecast, surface, chain law, etc.)
 - `additionalData` field contains free text passed to the LLM
 
-**Gemini output format:**
+**Per-row risk classification (`classify_cdot_risks()` in `route_conditions.R`):**
+
+Each filtered condition row is tagged with a `row_risk` level via keyword matching:
+
+| row_risk | Keywords |
+|---|---|
+| `do_not_travel` | "closed", "closure", "no travel" |
+| `high` | "chain law", "traction law", "code 15/16" |
+| `moderate` | "ice", "icy", "packed snow", "snow covered", "blowing snow" |
+| `low` | no matching keywords |
+
+This powers the route segment coloring on the Leaflet map.
+
+**Groq LLM output format:**
 ```
 RISK_LEVEL: low | moderate | high | do_not_travel
 SUMMARY: 2-3 sentence plain-language description
 KEY_ACTION: single most important driver action, or "None"
 ```
+
+**Note on LLM provider:** Groq was chosen over Google Gemini after Gemini's free tier quota was exhausted at the account level across multiple API keys. Groq's `llama-3.3-70b-versatile` is free, requires no credit card, and uses the OpenAI-compatible chat completions format. The function name `call_gemini_route_summary()` is retained for backward compatibility.
 
 **Drive time integration:**
 - Route returns `duration_mins` under normal conditions
@@ -509,23 +535,27 @@ If the top resort is blocked, the app falls back to #2, then #3, and explains ea
 
 ### 4b. Shiny App Output (`app.R`)
 
-The app displays three panels in the main area:
+All outputs update only when the user clicks **Find Resorts** — not on every input change — to avoid unnecessary API calls. Loading notifications appear at each pipeline stage.
 
 | Panel | Contents |
 |---|---|
-| **Recommended Resorts** | Top 3 ranked resorts: composite score, terrain match, avalanche risk, today/tomorrow danger ratings, problem types, CAIC zone |
+| **Leaflet Map** | Route line colored by road risk level (gray = clear, orange = moderate, red = high); blue circle = top resort, gray circles = #2 and #3; dark marker = user start location; legend in bottom-right |
+| **Route Conditions Panel** | Colored risk badge (green/orange/red/dark red), Groq LLM 2–3 sentence summary, key action advisory |
+| **Recommended Resorts** | Top 3 reranked by drive-time penalty: resort name, drive time, drive penalty %, final score |
 | **Resorts Excluded** | Only shown if any resorts were hard-blocked; lists resort name, danger rating, and reason |
 | **Current Avalanche Conditions** | Full table of all resorts with today/tomorrow ratings, sorted by danger level |
 
-### 4c. Planned Output Dashboard
+**Route segment coloring** — the `color_route_segments()` helper checks each GraphHopper waypoint for proximity to CDOT condition points (within ~3.5 miles). Consecutive waypoints with the same risk level are grouped into a single polyline segment and drawn with the appropriate color. High-risk segments are drawn at weight 6 vs 4 for clear segments.
 
-- **Map** — route colored green/yellow/red by risk; avalanche zone overlays; resort pins with score badges; rejected resorts marked with reason
-- **Recommended resort panel** — score breakdown, estimated terrain open
-- **Departure timing chart** — hourly risk curve, optimal departure/return window
-- **Flagged route segments**
-- **LLM-generated trip briefing** — plain-language recommendation, safety advisories, gear list calibrated to forecast temperatures
+**Graceful degradation:** each API stage is wrapped in `tryCatch`. If geocoding fails, Stage 1 results still display. If routing fails, the map shows resort pins without a route. If Groq is unavailable or the key is missing, the rest of the app still functions.
 
-A loading notification appears while the CAIC API is being called. All outputs update only when the user clicks **Find Resorts** (not on every input change), to avoid unnecessary API calls.
+### 4c. `app_demo.R` — UI Preview Without Live Scoring
+
+A standalone demo app for testing the UI and map without a working `score_resorts()` pipeline. Uses:
+- Hardcoded top-3 resorts (Breckenridge, Keystone, Loveland) with dummy scores
+- Real geocoding and GraphHopper routing (uses `.env` keys)
+- Dummy CDOT conditions at realistic I-70 trouble spots (Floyd Hill, Eisenhower Tunnel, Silverthorne) for route coloring
+- Dummy LLM output (moderate risk) for the route risk panel
 
 ---
 
@@ -534,7 +564,8 @@ A loading notification appears while the CAIC API is being called. All outputs u
 ### Dependencies
 
 ```r
-install.packages(c("shiny", "httr2", "dplyr", "purrr", "readr", "lubridate", "sf"))
+install.packages(c("shiny", "leaflet", "httr2", "dplyr", "purrr",
+                   "readr", "lubridate", "sf", "here"))
 ```
 
 The `sf` package requires system-level GDAL/GEOS libraries. On Windows these are bundled with the CRAN binary — a standard `install.packages("sf")` is sufficient.
@@ -567,7 +598,15 @@ print(result$blocked)
 
 ### API Keys
 
-None required for current modules. The CAIC API is free and open. Open-Meteo is also free with no key. Future modules (OpenRouteService, Anthropic/OpenAI) require keys — see proposal for details.
+Copy `.env.example` to `.env` and fill in your keys. The `.env` file is gitignored and must never be committed.
+
+```
+CDOT_API_KEY=your_cdot_key         # register at cotrip.org
+GRAPHHOPPER_API_KEY=your_key       # console.graphhopper.com — free, 500 req/day
+GROQ_API_KEY=your_key              # console.groq.com — free, no credit card required
+```
+
+CAIC and Open-Meteo require no keys.
 
 ### Cache Behaviour
 
@@ -580,17 +619,16 @@ result <- score_resorts()
 
 ---
 
-## Pending Modules
+## Pending Items
 
-| Module | File | Status | Feeds into |
-|---|---|---|---|
-| Weather forecast fetch | `fetch_weather.R` | Not started | `snow_score` in composite |
-| Route risk scoring | — | Not started | Stage 2 |
-| CDOT road conditions | — | Not started | Hard blocks |
-| Departure optimizer | — | Not started | Stage 4 |
-| LLM synthesis | — | Not started | Stage 5 |
-| Leaflet map | `app.R` | Not started | Resort pins, route overlay |
-| Origin city input | `app.R` | Not started | Drive time filtering (needs OpenRouteService) |
+| Item | Status | Notes |
+|---|---|---|
+| Wire Open-Meteo weather into composite score | Not started | `snow_score` currently placeholder NA in `score_resorts.R` |
+| Pass `trails_total` + `trail_mix` into `compute_terrain_open_score()` | Maren to do | `score_resorts.R` needs updating to call new function signature |
+| Call `normalize_terrain_scores()` at orchestration layer | Maren to do | Must happen after all resorts scored |
+| Test Groq LLM call end-to-end | Pending | Needs `GROQ_API_KEY` in `.env` from console.groq.com |
+| Integrate Stage 1 → Stage 2 in `app.R` | Pending | Waiting on `score_resorts.R` returning correct fields |
+| Departure optimizer | Not started | Stage 4 |
 
 ---
 
@@ -601,6 +639,19 @@ result <- score_resorts()
 - Curated static resort CSV (`resorts - clean.csv`) with 33 Colorado resorts
 - Established data source inventory and API access plan
 - Initialized repository structure
+
+### Session 4 — Shiny UI + Route Map + Risk Coloring (Hira)
+- Built full `app.R` UI with Stage 2 pipeline wiring:
+  - Added `textInput("start_location")` to sidebar
+  - Added `leafletOutput("route_map")` — Leaflet map with CartoDB Positron tiles
+  - Added route risk panel: colored risk badge, Groq LLM summary, key action advisory
+  - Updated resort table to show drive time, drive penalty %, and final score
+  - Wired server: geocode → rerank (×3 routes) → CDOT → Groq; all stages wrapped in `tryCatch` for graceful degradation
+- Added `classify_cdot_risks()` to `R/route_conditions.R` — tags each CDOT condition row with a `row_risk` level via keyword matching; `prepare_route_conditions()` now returns `filtered_df` with this column
+- Added `color_route_segments()` helper (in both `app.R` and `app_demo.R`) — splits route waypoints into same-risk groups and returns colored polyline segments; high-risk segments drawn thicker
+- Route coloring: gray = clear, orange = moderate, red/thicker = high, dark red = do_not_travel
+- Built `app_demo.R` — full UI preview using dummy resort data, real geocoding + routing, dummy CDOT conditions at Floyd Hill / Eisenhower Tunnel / Silverthorne for testing the map without a working Stage 1 pipeline
+- Switched LLM provider: Gemini → Groq (`llama-3.3-70b-versatile`) — free tier with no credit card; confirmed Gemini free quota = 0 at account level across multiple keys
 
 ### Session 3 — Stage 2 Routing Pipeline + Terrain Score Fix (Hira)
 - Built `R/load_env.R` — loads API keys from `.env` file (never committed)

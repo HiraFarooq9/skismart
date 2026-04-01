@@ -1,17 +1,21 @@
 # =============================================================================
 # llm_route_summary.R
-# Gemini LLM Call for Route Condition Interpretation
+# Groq LLM Call for Route Condition Interpretation
 #
-# Sends the prompt built by route_conditions.R to the Gemini API and parses
+# Sends the prompt built by route_conditions.R to the Groq API and parses
 # the structured response into a clean list for the UI.
 #
 # API details:
-#   Model    : gemini-2.0-flash (fast, cheap, sufficient for this task)
-#   Base URL : https://generativelanguage.googleapis.com/v1beta/models/
-#   Auth     : API key as query param (?key=...)
-#   Docs     : https://ai.google.dev/api/generate-content
+#   Provider : Groq (groq.com) — free tier, no card required
+#   Model    : llama-3.3-70b-versatile (fast, capable, free)
+#   Base URL : https://api.groq.com/openai/v1/chat/completions
+#   Auth     : Bearer token in Authorization header
+#   Docs     : https://console.groq.com/docs/openai
+#   Sign up  : https://console.groq.com
 #
-# Expected Gemini response format (enforced by prompt in route_conditions.R):
+# Groq uses the OpenAI-compatible chat completions format.
+#
+# Expected response format (enforced by prompt in route_conditions.R):
 #   RISK_LEVEL: [low | moderate | high | do_not_travel]
 #   SUMMARY: [2-3 sentences]
 #   KEY_ACTION: [single action or "None"]
@@ -26,49 +30,43 @@ library(httr2)
 # CONSTANTS
 # -----------------------------------------------------------------------------
 
-GEMINI_BASE_URL <- "https://generativelanguage.googleapis.com/v1beta/models"
-GEMINI_MODEL    <- "gemini-2.0-flash-lite"
+GROQ_BASE_URL <- "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL    <- "llama-3.3-70b-versatile"
 
 
 # -----------------------------------------------------------------------------
 # MAIN FUNCTION
 # -----------------------------------------------------------------------------
 
-#' Send a route conditions prompt to Gemini and return a parsed summary
+#' Send a route conditions prompt to Groq and return a parsed summary
 #'
-#' @param prompt      Character. Built by build_route_llm_prompt() in
-#'                    route_conditions.R.
-#' @param gemini_key  Character. Gemini API key.
+#' @param prompt    Character. Built by build_route_llm_prompt() in
+#'                  route_conditions.R.
+#' @param groq_key  Character. Groq API key.
 #'
 #' @return Named list:
 #'   $risk_level  — character: "low", "moderate", "high", or "do_not_travel"
 #'   $summary     — character: 2-3 sentence plain-language description
 #'   $key_action  — character: top recommended action, or "None"
-#'   $raw_text    — character: full raw Gemini response (for debugging)
+#'   $raw_text    — character: full raw response (for debugging)
 #'   Returns a safe fallback list on any failure.
-call_gemini_route_summary <- function(prompt, gemini_key) {
-  url <- sprintf("%s/%s:generateContent", GEMINI_BASE_URL, GEMINI_MODEL)
+call_gemini_route_summary <- function(prompt, groq_key) {
 
   body <- list(
-    contents = list(
-      list(
-        parts = list(
-          list(text = prompt)
-        )
-      )
+    model    = GROQ_MODEL,
+    messages = list(
+      list(role = "user", content = prompt)
     ),
-    generationConfig = list(
-      temperature     = 0.2,   # low temperature — we want factual, consistent output
-      maxOutputTokens = 300
-    )
+    temperature = 0.2,
+    max_tokens  = 300
   )
 
-  req <- request(url) |>
-    req_url_query(key = gemini_key) |>
-    req_body_json(body) |>
+  req <- request(GROQ_BASE_URL) |>
     req_headers(
+      Authorization = paste("Bearer", groq_key),
       `Content-Type` = "application/json"
     ) |>
+    req_body_json(body) |>
     req_timeout(30) |>
     req_error(is_error = function(resp) FALSE)
 
@@ -76,7 +74,7 @@ call_gemini_route_summary <- function(prompt, gemini_key) {
 
   if (resp_status(resp) != 200) {
     warning(sprintf(
-      "Gemini API returned status %d. Body: %s",
+      "Groq API returned status %d. Body: %s",
       resp_status(resp),
       tryCatch(resp_body_string(resp), error = function(e) "<unreadable>")
     ))
@@ -86,21 +84,20 @@ call_gemini_route_summary <- function(prompt, gemini_key) {
   raw <- tryCatch(
     resp_body_json(resp, simplifyVector = FALSE),
     error = function(e) {
-      warning(paste("Failed to parse Gemini response:", e$message))
+      warning(paste("Failed to parse Groq response:", e$message))
       NULL
     }
   )
 
   if (is.null(raw)) return(.fallback_summary())
 
-  # Extract text from response
   raw_text <- tryCatch(
-    raw$candidates[[1]]$content$parts[[1]]$text,
+    raw$choices[[1]]$message$content,
     error = function(e) NULL
   )
 
   if (is.null(raw_text) || nchar(trimws(raw_text)) == 0) {
-    warning("Gemini returned an empty response.")
+    warning("Groq returned an empty response.")
     return(.fallback_summary())
   }
 
@@ -112,13 +109,6 @@ call_gemini_route_summary <- function(prompt, gemini_key) {
 # RESPONSE PARSER
 # -----------------------------------------------------------------------------
 
-#' Parse the structured Gemini text response into named fields
-#'
-#' Expects lines starting with RISK_LEVEL:, SUMMARY:, KEY_ACTION:
-#' Gracefully handles minor formatting deviations.
-#'
-#' @param text Character. Raw text from Gemini.
-#' @return Named list with: risk_level, summary, key_action, raw_text
 .parse_gemini_response <- function(text) {
   extract <- function(label) {
     pattern <- sprintf("(?i)^%s:\\s*(.+?)\\s*$", label)
@@ -130,13 +120,12 @@ call_gemini_route_summary <- function(prompt, gemini_key) {
 
   risk_raw <- tolower(trimws(extract("RISK_LEVEL")))
 
-  # Normalise to valid values
   risk_level <- if (grepl("do_not|no.travel|do not", risk_raw)) {
     "do_not_travel"
   } else if (risk_raw %in% c("low", "moderate", "high")) {
     risk_raw
   } else {
-    "moderate"  # conservative default if unrecognised
+    "moderate"
   }
 
   list(
@@ -148,7 +137,6 @@ call_gemini_route_summary <- function(prompt, gemini_key) {
 }
 
 
-#' Safe fallback when Gemini call fails
 .fallback_summary <- function() {
   list(
     risk_level  = "unknown",

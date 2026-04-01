@@ -170,6 +170,37 @@ KEY_ACTION: [The single most important thing the driver should do, or "None" if 
 
 
 # -----------------------------------------------------------------------------
+# PER-ROW RISK CLASSIFICATION
+# -----------------------------------------------------------------------------
+
+#' Classify risk level for each row in a filtered CDOT data frame
+#'
+#' Adds a `row_risk` column so the UI can colour-code individual condition
+#' markers on the map independently of the route-level risk summary.
+#'
+#' @param filtered_df Data frame. Output of filter_cdot_to_route().
+#' @return Same data frame with an added character column: row_risk
+#'   ("low", "moderate", "high", "do_not_travel")
+classify_cdot_risks <- function(filtered_df) {
+  if (nrow(filtered_df) == 0) {
+    return(filtered_df |> mutate(row_risk = character(0)))
+  }
+
+  .classify_one <- function(ctype, adata) {
+    text <- tolower(paste(ctype, if (is.na(adata)) "" else adata))
+    if (any(sapply(CLOSURE_KEYWORDS,     grepl, x = text, fixed = TRUE))) return("do_not_travel")
+    if (any(sapply(CHAIN_LAW_KEYWORDS,   grepl, x = text, fixed = TRUE))) return("high")
+    if (any(sapply(BAD_SURFACE_KEYWORDS, grepl, x = text, fixed = TRUE))) return("moderate")
+    "low"
+  }
+
+  filtered_df |>
+    mutate(row_risk = mapply(.classify_one, condition_type, additional_data,
+                             USE.NAMES = FALSE))
+}
+
+
+# -----------------------------------------------------------------------------
 # ORCHESTRATOR
 # -----------------------------------------------------------------------------
 
@@ -181,11 +212,11 @@ KEY_ACTION: [The single most important thing the driver should do, or "None" if 
 #' @param ski_date    Date or character. First ski day.
 #'
 #' @return Named list:
-#'   $filtered_df  — CDOT rows along the route
-#'   $risk_level   — preliminary risk level (character)
+#'   $filtered_df  — CDOT rows along the route, with `row_risk` column added
+#'   $risk_level   — route-level preliminary risk level (character)
 #'   $llm_prompt   — ready-to-send prompt string
 prepare_route_conditions <- function(route, cdot_df, resort_name, ski_date) {
-  filtered   <- filter_cdot_to_route(route, cdot_df)
+  filtered   <- filter_cdot_to_route(route, cdot_df) |> classify_cdot_risks()
   risk       <- derive_risk_level(filtered)
   prompt     <- build_route_llm_prompt(route, filtered, resort_name, ski_date)
 

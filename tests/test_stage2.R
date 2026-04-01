@@ -12,7 +12,7 @@ source("R/llm_route_summary.R")
 
 CDOT_KEY   <- Sys.getenv("CDOT_API_KEY")
 GH_KEY     <- Sys.getenv("GRAPHHOPPER_API_KEY")
-GEMINI_KEY <- Sys.getenv("GEMINI_API_KEY")
+GROQ_KEY   <- Sys.getenv("GROQ_API_KEY")
 
 RESORT     <- "Breckenridge"
 RESORT_LAT <- 39.4817
@@ -103,7 +103,7 @@ KEY_ACTION: [The single most important thing the driver should do, or "None".]'
 # SECTION 5: Call Gemini for plain-language route summary
 # =============================================================================
 
-llm_out <- call_gemini_route_summary(result$llm_prompt, GEMINI_KEY)
+llm_out <- call_gemini_route_summary(result$llm_prompt, GROQ_KEY)
 
 cat("\n--- Gemini Response ---\n")
 cat("Risk level: ", llm_out$risk_level, "\n")
