@@ -38,29 +38,28 @@ Layer 1 (MVP) covers Stages 1–3 and the dashboard. Layer 2 adds the full route
 skismart/
 ├── README.md                  # this file
 ├── app.R                      # Shiny UI + server — full Stage 1 + Stage 2 pipeline
-├── app_demo.R                 # UI demo: dummy resort data, real map routing (for testing)
-├── score_resorts.R            # Stage 1: resort scoring orchestrator
-├── fetch_caic.R               # Stage 1: CAIC avalanche data fetching
+├── app_demo.R                 # UI preview with dummy data (for testing without live APIs)
+├── launch_app.R               # helper: launches app with explicit path (Windows fix)
+├── .env                       # API keys — gitignored, never committed
+├── .env.example               # safe-to-commit key template
+├── data/
+│   └── resorts.csv            # static resort database (33 Colorado resorts)
 ├── R/
-│   ├── load_env.R             # loads API keys from .env into Sys.setenv()
-│   ├── weather_score.R        # Stage 1: weather scoring functions (Hira)
+│   ├── composite_score.R      # Stage 1: master scoring orchestrator (Maren)
+│   ├── fetch_caic.R           # Stage 1: CAIC avalanche fetch + spatial join (Maren)
+│   ├── api_openmeteo.R        # Stage 1: Open-Meteo weather fetch + unit conversion (Hira)
+│   ├── weather_score.R        # Stage 1: weather quality scoring functions (Hira)
 │   ├── terrain_open_score.R   # Stage 1: terrain open score — absolute trail counts (Hira)
-│   ├── api_openmeteo.R        # Stage 1: Open-Meteo API fetch layer (Hira)
+│   ├── load_env.R             # loads API keys from .env into Sys.setenv()
 │   ├── api_geocode.R          # Stage 2: Nominatim geocoder (Hira)
 │   ├── api_routing.R          # Stage 2: GraphHopper route fetch (Hira)
 │   ├── api_cdot.R             # Stage 2: CDOT /roadConditions fetch (Hira)
 │   ├── route_conditions.R     # Stage 2: spatial filter + per-row risk + LLM prompt (Hira)
 │   ├── llm_route_summary.R    # Stage 2: Groq LLM call + response parser (Hira)
 │   └── stage2_rerank.R        # Stage 2: drive-time penalty + resort reranking (Hira)
-├── tests/
-│   ├── test_scoring.R         # Stage 1 standalone tests
-│   └── test_stage2.R          # Stage 2 section-by-section test script
-├── .env                       # API keys — gitignored, never committed
-├── .env.example               # safe-to-commit key template
-├── resorts - clean.csv        # static resort database (33 Colorado resorts)
-├── launch_app.R               # helper: launches app with explicit path (Windows fix)
-├── caic_zone_lookup.R         # (legacy) standalone zone lookup, superseded by fetch_caic.R
-└── debug_caic_api.R           # (dev only) API exploration script, not part of pipeline
+└── tests/
+    ├── test_scoring.R         # Stage 1 unit + scenario tests
+    └── test_stage2.R          # Stage 2 section-by-section test script
 ```
 
 ---
@@ -357,7 +356,24 @@ normalized_score = (raw_score - min) / (max - min)
 
 ---
 
-### 3d. Open-Meteo API Layer (`R/api_openmeteo.R`)
+### 3d. Season Open/Closed Filter (`R/composite_score.R`)
+
+Before any API calls are made, resorts are filtered against their `season_open` and `season_close` dates from `resorts.csv`. This prevents API calls for closed resorts and ensures closed resorts never appear in recommendations.
+
+**Logic:**
+- Dates are stored as `MM-DD` in the CSV (e.g. `"11-27"`, `"04-19"`)
+- Ski seasons span two calendar years (open in fall, close in spring)
+- The function determines the correct calendar year for each bound based on which half of the season the `ski_date` falls in
+
+**Example:** A resort with `season_open = "11-15"` and `season_close = "04-10"`:
+- For a `ski_date` of 2026-03-31: opens 2025-11-15, closes 2026-04-10 → **open**
+- For a `ski_date` of 2026-05-01: opens 2025-11-15, closes 2026-04-10 → **closed, excluded**
+
+Resorts with missing season dates are assumed open (fail-safe).
+
+---
+
+### 3e. Open-Meteo API Layer (`R/api_openmeteo.R`)
 
 Fetches and unit-converts live weather data for a resort coordinate. No API key required.
 
@@ -421,22 +437,36 @@ A user with high risk tolerance (1.0) reduces the penalty by 40%.
 
 ---
 
-### 3g. Composite Score (`score_resorts.R`)
+### 3g. Composite Score (`R/composite_score.R`)
 
-**Current formula** (while weather data is placeholder):
+Master scoring function integrating all Stage 1 components. Uses a **two-pass structure** because terrain score normalization requires the full distribution across all resorts before any composite can be computed.
+
+**Pass 1** — fetch weather and compute raw terrain scores for all open resorts.
+
+**Normalize** — `normalize_terrain_scores()` scales raw trail counts to 0–1 relative to the best-scoring resort in the candidate set.
+
+**Pass 2** — compute composite scores and apply avalanche multiplier.
+
+**Formula:**
 ```
-composite = terrain_score × 0.70 + (100 - risk_score) × 0.30
+base_score = (weather_score × 0.5) + (terrain_score_normalized × 0.5)
 ```
 
-**Planned formula** once Open-Meteo weather data is integrated:
-```
-composite = snow_score × 0.40 + terrain_score × 0.35 + (100 - risk_score) × 0.25
-```
+**Avalanche multiplier** (applied only when ski_date is today or tomorrow):
 
-**Hard blocks** — resorts are removed from ranking entirely if:
-- `danger_numeric >= 4` (High or Extreme avalanche danger)
-- *(planned)* Road closed with no alternate route (CDOT 511)
-- *(planned)* Resort closed for the season
+| Danger level | Multiplier |
+|---|---|
+| Low | × 1.00 |
+| Moderate | × 0.90 |
+| Considerable | × 0.75 |
+| High | × 0.50 |
+| Extreme | score = NA — resort excluded |
+
+If ski_date is beyond tomorrow or CAIC data is unavailable, the multiplier is skipped entirely (`avalanche_applied = FALSE`).
+
+**Output columns:** `resort_id`, `resort_name`, `composite_score`, `weather_score`, `terrain_score`, `avalanche_danger`, `avalanche_applied`, `lift_pct`, `warnings`, `error`
+
+Results are sorted by `composite_score` descending (NAs last). The app displays the top 5.
 
 ---
 
@@ -537,13 +567,17 @@ If the top resort is blocked, the app falls back to #2, then #3, and explains ea
 
 All outputs update only when the user clicks **Find Resorts** — not on every input change — to avoid unnecessary API calls. Loading notifications appear at each pipeline stage.
 
-| Panel | Contents |
-|---|---|
-| **Leaflet Map** | Route line colored by road risk level (gray = clear, orange = moderate, red = high); blue circle = top resort, gray circles = #2 and #3; dark marker = user start location; legend in bottom-right |
-| **Route Conditions Panel** | Colored risk badge (green/orange/red/dark red), Groq LLM 2–3 sentence summary, key action advisory |
-| **Recommended Resorts** | Top 3 reranked by drive-time penalty: resort name, drive time, drive penalty %, final score |
-| **Resorts Excluded** | Only shown if any resorts were hard-blocked; lists resort name, danger rating, and reason |
-| **Current Avalanche Conditions** | Full table of all resorts with today/tomorrow ratings, sorted by danger level |
+**Design:** navy/blue gradient header with mountain SVG logo, white result cards, yellow warnings panel. No external CSS frameworks beyond Bootstrap (bundled with Shiny).
+
+**User inputs (sidebar):** starting location, trip date, max drive time, ability level, terrain preference, season pass, risk tolerance.
+
+| Panel | Contents | Shown when |
+|---|---|---|
+| **Leaflet Map** | Route colored by risk level; blue = top resort, gray = #2/#3, dark = start | Always after run |
+| **Route Conditions** | Risk badge, Groq LLM summary, key action advisory, drive time | When routing succeeds |
+| **Top 5 Recommended Resorts** | Score, weather, terrain, lifts %, avalanche danger, drive time | Always after run |
+| **Conditions to Note** | Per-resort warnings (thin base, high wind, rain, avalanche) | Only if warnings exist |
+| **Avalanche Conditions** | CAIC danger ratings sorted by severity | Today/tomorrow ski dates only |
 
 **Route segment coloring** — the `color_route_segments()` helper checks each GraphHopper waypoint for proximity to CDOT condition points (within ~3.5 miles). Consecutive waypoints with the same risk level are grouped into a single polyline segment and drawn with the appropriate color. High-risk segments are drawn at weight 6 vs 4 for clear segments.
 
@@ -580,20 +614,14 @@ Alternatively, open `launch_app.R` and click **Source** — this sets the workin
 
 ```r
 setwd("path/to/final project")
-source("score_resorts.R")
+source("R/composite_score.R")
 
-# With default inputs
-result <- score_resorts()
-print(result$top)
+resorts <- read.csv("data/resorts.csv")
 
-# With custom inputs
-result <- score_resorts(user_inputs = list(
-  ability_level   = "expert",
-  max_drive_hours = 3,
-  risk_tolerance  = 0.8
-))
-print(result$top)
-print(result$blocked)
+# Score all open resorts for a given date and ability
+results <- score_all_resorts(resorts, ski_date = Sys.Date() + 1, ability = "intermediate")
+print(results[, c("resort_name", "composite_score", "weather_score",
+                  "terrain_score", "avalanche_danger")])
 ```
 
 ### API Keys
@@ -606,15 +634,16 @@ GRAPHHOPPER_API_KEY=your_key       # console.graphhopper.com — free, 500 req/d
 GROQ_API_KEY=your_key              # console.groq.com — free, no credit card required
 ```
 
-CAIC and Open-Meteo require no keys.
+Stage 1 (resort scoring) requires no API keys — CAIC and Open-Meteo are free and open.
 
 ### Cache Behaviour
 
 CAIC data is cached in memory for the R session. To force a fresh API call:
 
 ```r
+source("R/fetch_caic.R")
 clear_caic_cache()
-result <- score_resorts()
+results <- score_all_resorts(resorts, ski_date = Sys.Date() + 1, ability = "intermediate")
 ```
 
 ---
@@ -623,12 +652,10 @@ result <- score_resorts()
 
 | Item | Status | Notes |
 |---|---|---|
-| Wire Open-Meteo weather into composite score | Not started | `snow_score` currently placeholder NA in `score_resorts.R` |
-| Pass `trails_total` + `trail_mix` into `compute_terrain_open_score()` | Maren to do | `score_resorts.R` needs updating to call new function signature |
-| Call `normalize_terrain_scores()` at orchestration layer | Maren to do | Must happen after all resorts scored |
 | Test Groq LLM call end-to-end | Pending | Needs `GROQ_API_KEY` in `.env` from console.groq.com |
-| Integrate Stage 1 → Stage 2 in `app.R` | Pending | Waiting on `score_resorts.R` returning correct fields |
+| Test full Stage 1 + Stage 2 integration in app | Pending | Awaiting live test with all keys |
 | Departure optimizer | Not started | Stage 4 |
+| LLM trip briefing | Not started | Stage 5 final output |
 
 ---
 
@@ -681,7 +708,23 @@ result <- score_resorts()
 - Built `app.R` / `launch_app.R` — Shiny UI skeleton with CAIC danger output panel
 - Identified undocumented CAIC API endpoints via browser network inspection
 
-**Next:** Integrate Hira's weather/terrain-open scores into `score_resorts.R`, then begin Stage 2 route risk.
+### Session 4 — Stage 1 Integration + App Redesign (Maren)
+- Built `R/composite_score.R` — master Stage 1 scoring function integrating all components:
+  - Sources `R/api_openmeteo.R`, `R/weather_score.R`, `R/terrain_open_score.R`, `R/fetch_caic.R`
+  - Two-pass structure: Pass 1 fetches weather + raw terrain scores; Pass 2 normalizes terrain and computes composite
+  - Season open/closed filter applied before API calls — closed resorts excluded from results
+  - Avalanche multiplier applied for today/tomorrow only; skipped for future dates
+  - Handles weather fetch failures gracefully (NA scores, error logged, pipeline continues)
+- Redesigned `app.R` — minimalist dashboard:
+  - Navy/blue gradient header with inline SVG mountain logo
+  - White result cards with subtle shadows
+  - Yellow-tinted warnings panel (conditional — only shown when warnings exist)
+  - Avalanche conditions card (conditional — only shown for today/tomorrow)
+  - Top 5 resorts displayed (unsafe and errored resorts excluded)
+  - All outputs update only on button click to avoid unnecessary API calls
+- Updated `.gitignore` to exclude `.env` (API keys)
+
+**Next:** Wire Stage 2 route risk scoring into the app, add origin city input.
 
 ---
 

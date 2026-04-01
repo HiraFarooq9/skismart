@@ -2,30 +2,24 @@
 # app.R — SkiSmart Shiny Application
 # =============================================================================
 #
-# STRUCTURE
-#   ui     defines what the user sees (sidebar inputs + main panel outputs)
-#   server defines what happens when inputs change (runs the scoring pipeline)
-#
 # PIPELINE
-#   Stage 1 — score_resorts.R: conditions + avalanche scoring → top 3
+#   Stage 1 — R/composite_score.R: weather + terrain + avalanche → top resorts
 #   Stage 2 — geocode → route → drive-time rerank → CDOT → Groq LLM summary
 #
 # TO RUN
-#   Open this file in RStudio and click "Run App", or:
-#   shiny::runApp("app.R")
+#   Open in RStudio and click "Run App", or: shiny::runApp("app.R")
+#   Working directory must be the project root.
 #
 # DEPENDENCIES
-#   score_resorts.R sources fetch_caic.R.
 #   Stage 2 files live in R/. API keys in .env (copy from .env.example).
 # =============================================================================
 
 library(shiny)
 library(dplyr)
-library(readr)
 library(leaflet)
 
-source("score_resorts.R")   # Stage 1 orchestrator (sources fetch_caic.R)
-source("R/load_env.R")      # loads .env keys into Sys.setenv()
+source("R/composite_score.R")  # Stage 1: score_all_resorts()
+source("R/load_env.R")         # loads .env keys into Sys.setenv()
 source("R/api_geocode.R")
 source("R/api_routing.R")
 source("R/api_cdot.R")
@@ -33,11 +27,17 @@ source("R/route_conditions.R")
 source("R/llm_route_summary.R")
 source("R/stage2_rerank.R")
 
+resorts <- read.csv("data/resorts.csv", stringsAsFactors = FALSE)
+
 GH_KEY   <- Sys.getenv("GRAPHHOPPER_API_KEY")
 CDOT_KEY <- Sys.getenv("CDOT_API_KEY")
 GROQ_KEY <- Sys.getenv("GROQ_API_KEY")
 
-# Map risk level → polyline color
+
+# -----------------------------------------------------------------------------
+# HELPERS
+# -----------------------------------------------------------------------------
+
 risk_color <- function(risk) {
   dplyr::case_when(
     risk == "do_not_travel" ~ "#7B2D2D",
@@ -47,8 +47,6 @@ risk_color <- function(risk) {
   )
 }
 
-# Color route waypoints by proximity to CDOT condition points.
-# Returns a list of segments, each with $lats, $lons, $risk.
 color_route_segments <- function(waypoints, conditions, buffer_deg = 0.05) {
   priority <- c("clear" = 0, "low" = 1, "moderate" = 2,
                 "high" = 3, "do_not_travel" = 4)
@@ -80,28 +78,254 @@ color_route_segments <- function(waypoints, conditions, buffer_deg = 0.05) {
 
 
 # =============================================================================
+# STYLING
+# =============================================================================
+
+skismart_css <- "
+
+  /* ── Palette ──────────────────────────────────────────────────────────── */
+  :root {
+    --navy:       #1B3A5C;
+    --blue:       #2E6DA4;
+    --blue-light: #5BA4CF;
+    --blue-pale:  #EBF5FF;
+    --snow:       #F4F8FC;
+    --border:     #D6E4F0;
+    --text:       #1A2B3C;
+    --muted:      #6B7C8F;
+    --white:      #FFFFFF;
+    --danger-low:          #2E7D32;
+    --danger-moderate:     #F57F17;
+    --danger-considerable: #E65100;
+    --danger-high:         #B71C1C;
+    --danger-extreme:      #6A1B9A;
+  }
+
+  /* ── Page ─────────────────────────────────────────────────────────────── */
+  body {
+    background-color: var(--snow);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    color: var(--text);
+  }
+
+  /* ── Header bar ───────────────────────────────────────────────────────── */
+  .skismart-header {
+    background: linear-gradient(135deg, var(--navy) 0%, var(--blue) 100%);
+    color: white;
+    padding: 18px 28px 16px 28px;
+    margin: -15px -15px 24px -15px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .skismart-header h1 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: white;
+  }
+  .skismart-header p {
+    margin: 2px 0 0 0;
+    font-size: 13px;
+    color: rgba(255,255,255,0.75);
+    letter-spacing: 0.2px;
+  }
+
+  /* ── Sidebar card ─────────────────────────────────────────────────────── */
+  .well {
+    background: var(--white) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    box-shadow: 0 2px 8px rgba(27,58,92,0.07) !important;
+    padding: 20px !important;
+  }
+  .well h4 {
+    color: var(--navy);
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 14px;
+  }
+  .well hr {
+    border-color: var(--border);
+    margin: 16px 0;
+  }
+  .well .help-block {
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
+  /* ── Labels & inputs ──────────────────────────────────────────────────── */
+  label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .form-control, .selectize-input {
+    border-color: var(--border) !important;
+    border-radius: 6px !important;
+    font-size: 14px !important;
+  }
+  .form-control:focus {
+    border-color: var(--blue-light) !important;
+    box-shadow: 0 0 0 2px rgba(91,164,207,0.2) !important;
+  }
+
+  /* ── Find Resorts button ──────────────────────────────────────────────── */
+  #find_resorts {
+    background: linear-gradient(135deg, var(--blue) 0%, var(--blue-light) 100%);
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    padding: 10px;
+    box-shadow: 0 3px 10px rgba(46,109,164,0.35);
+    transition: opacity 0.15s;
+  }
+  #find_resorts:hover { opacity: 0.88; }
+
+  /* ── Result cards ─────────────────────────────────────────────────────── */
+  .result-card {
+    background: var(--white);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 22px 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 8px rgba(27,58,92,0.06);
+  }
+  .result-card h3 {
+    color: var(--navy);
+    font-size: 17px;
+    font-weight: 700;
+    margin-top: 0;
+    margin-bottom: 4px;
+  }
+  .result-card .subtitle {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+
+  /* ── Tables ───────────────────────────────────────────────────────────── */
+  .table {
+    font-size: 13px;
+    border-collapse: separate;
+    border-spacing: 0;
+    width: 100%;
+  }
+  .table thead th {
+    background-color: var(--blue-pale);
+    color: var(--navy);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    padding: 10px 12px;
+    border-bottom: 2px solid var(--border);
+  }
+  .table tbody tr:hover { background-color: var(--blue-pale); }
+  .table tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .table tbody tr:last-child td { border-bottom: none; }
+
+  /* ── Warnings panel ───────────────────────────────────────────────────── */
+  .warnings-card {
+    background: #FFFBEA;
+    border: 1px solid #F9E08A;
+    border-left: 4px solid #F0B429;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+  }
+  .warnings-card h4 {
+    color: #7D5A00;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    margin: 0 0 10px 0;
+  }
+  .warnings-card ul {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 13px;
+    color: #5A4000;
+    line-height: 1.8;
+  }
+
+  /* ── Avalanche danger badges ──────────────────────────────────────────── */
+  .badge-low          { color: var(--danger-low);          font-weight: 700; }
+  .badge-moderate     { color: var(--danger-moderate);     font-weight: 700; }
+  .badge-considerable { color: var(--danger-considerable); font-weight: 700; }
+  .badge-high         { color: var(--danger-high);         font-weight: 700; }
+  .badge-extreme      { color: var(--danger-extreme);      font-weight: 700; }
+
+  /* ── Welcome banner ───────────────────────────────────────────────────── */
+  .welcome-banner {
+    background: var(--blue-pale);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--blue-light);
+    border-radius: 8px;
+    padding: 18px 20px;
+    color: var(--navy);
+    font-size: 14px;
+    margin-top: 8px;
+  }
+  .welcome-banner strong { color: var(--blue); }
+
+  /* ── Data source footer ───────────────────────────────────────────────── */
+  .data-footer {
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    padding: 12px 0 4px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 24px;
+  }
+"
+
+mountain_logo <- tags$svg(
+  xmlns = "http://www.w3.org/2000/svg",
+  width = "48", height = "38", viewBox = "0 0 48 38",
+  tags$polygon(points = "24,2 46,36 2,36",  fill = "rgba(255,255,255,0.25)"),
+  tags$polygon(points = "24,2 31,14 17,14", fill = "white"),
+  tags$polygon(points = "36,12 46,36 26,36", fill = "rgba(255,255,255,0.18)")
+)
+
+
+# =============================================================================
 # UI
 # =============================================================================
 
 ui <- fluidPage(
 
-  titlePanel(
+  tags$head(tags$style(HTML(skismart_css))),
+
+  # ── Header ──────────────────────────────────────────────────────────────────
+  div(class = "skismart-header",
+    mountain_logo,
     div(
-      h1("SkiSmart", style = "margin-bottom: 0;"),
-      h4("Find the best Colorado ski resort for your trip",
-         style = "color: #666; margin-top: 4px;")
+      tags$h1("SkiSmart"),
+      tags$p("Colorado ski resort recommendations · Live conditions")
     )
   ),
 
   sidebarLayout(
 
-    # ── Sidebar: all user inputs ─────────────────────────────────────────────
+    # ── Sidebar ─────────────────────────────────────────────────────────────
     sidebarPanel(
       width = 3,
 
-      # ── Starting location ───────────────────────────────────────────────────
       h4("Starting Location"),
-
       textInput(
         inputId     = "start_location",
         label       = "Your city or address",
@@ -109,13 +333,12 @@ ui <- fluidPage(
         placeholder = "e.g. Denver, CO  or  80302"
       ),
 
-      # ── Trip details ─────────────────────────────────────────────────────────
       hr(),
       h4("Trip Details"),
 
       dateInput(
         inputId = "trip_date",
-        label   = "Ski date",
+        label   = "Date of trip",
         value   = Sys.Date() + 1,
         min     = Sys.Date(),
         max     = Sys.Date() + 10,
@@ -131,7 +354,6 @@ ui <- fluidPage(
         step    = 0.5
       ),
 
-      # ── Skier profile ─────────────────────────────────────────────────────────
       hr(),
       h4("Skier Profile"),
 
@@ -169,7 +391,6 @@ ui <- fluidPage(
         selected = "none"
       ),
 
-      # ── Safety preferences ─────────────────────────────────────────────────
       hr(),
       h4("Safety Preferences"),
 
@@ -184,7 +405,6 @@ ui <- fluidPage(
       ),
       helpText("0 = avoid all risk, 1 = comfortable with higher danger ratings"),
 
-      # ── Submit ─────────────────────────────────────────────────────────────
       hr(),
       actionButton(
         inputId = "find_resorts",
@@ -194,49 +414,40 @@ ui <- fluidPage(
       ),
 
       br(), br(),
-      helpText("Avalanche data updates once daily from CAIC.")
+      helpText(
+        "Weather: Open-Meteo (10-day forecast).",
+        tags$br(),
+        "Avalanche: CAIC (today & tomorrow only).",
+        tags$br(),
+        "33 Colorado resorts · Season dates applied."
+      )
     ),
 
-    # ── Main panel: results ─────────────────────────────────────────────────
+    # ── Main panel ────────────────────────────────────────────────────────────
     mainPanel(
       width = 9,
 
       uiOutput("status_message"),
 
-      # ── Map ────────────────────────────────────────────────────────────────
+      # ── Map ──────────────────────────────────────────────────────────────
       leafletOutput("route_map", height = "400px"),
       br(),
 
-      # ── Route risk panel (winner only) ─────────────────────────────────────
+      # ── Route risk panel ─────────────────────────────────────────────────
       uiOutput("route_risk_panel"),
 
-      # ── Top resort recommendations ─────────────────────────────────────────
-      h3("Recommended Resorts"),
-      p("Ranked by composite conditions score, reranked by drive time from your
-        starting location."),
-      tableOutput("top_resorts_table"),
+      # ── Resort recommendations ────────────────────────────────────────────
+      uiOutput("results_card"),
 
-      # ── Blocked resorts ────────────────────────────────────────────────────
-      conditionalPanel(
-        condition = "output.show_blocked",
-        hr(),
-        h4("Resorts Excluded"),
-        p("The following resorts were excluded due to safety conditions:"),
-        tableOutput("blocked_resorts_table")
-      ),
+      # ── Warnings ─────────────────────────────────────────────────────────
+      uiOutput("warnings_panel"),
 
-      # ── Avalanche details ──────────────────────────────────────────────────
-      hr(),
-      h3("Current Avalanche Conditions"),
-      p("Today's and tomorrow's danger ratings for all resorts, from the
-         Colorado Avalanche Information Center (CAIC)."),
-      tableOutput("avalanche_table"),
+      # ── Avalanche conditions ──────────────────────────────────────────────
+      uiOutput("avalanche_card"),
 
-      # ── Debug panel ────────────────────────────────────────────────────────
-      # TODO: Remove before final submission
-      hr(),
-      h4("Debug: Raw Scores (all resorts)"),
-      tableOutput("debug_table")
+      div(class = "data-footer",
+        "Data sources: Open-Meteo · Colorado Avalanche Information Center (CAIC) · Static resort database"
+      )
     )
   )
 )
@@ -248,66 +459,55 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
 
-  # ── Stage 1 + Stage 2 pipeline ──────────────────────────────────────────────
+  # ── Full pipeline ────────────────────────────────────────────────────────────
   pipeline_result <- eventReactive(input$find_resorts, {
 
     # --- Stage 1: conditions scoring ------------------------------------------
-    showNotification("Fetching avalanche and terrain data...",
-                     type = "message", duration = NULL, id = "loading_s1")
-
-    user_inputs <- list(
-      ability_level   = input$ability_level,
-      max_drive_hours = input$max_drive_hours,
-      terrain_pref    = input$terrain_pref,
-      trip_date       = input$trip_date,
-      pass_type       = input$pass_type,
-      risk_tolerance  = input$risk_tolerance
-    )
-
-    stage1 <- tryCatch(
-      score_resorts(user_inputs = user_inputs),
+    showNotification("Scoring resorts...", type = "message",
+                     duration = NULL, id = "loading_s1")
+    stage1_df <- tryCatch(
+      score_all_resorts(resorts, input$trip_date, input$ability_level),
       error = function(e) {
-        showNotification(paste("Stage 1 error:", e$message), type = "error", duration = 8)
+        showNotification(paste("Scoring error:", e$message), type = "error", duration = 8)
         NULL
       }
     )
     removeNotification("loading_s1")
 
-    if (is.null(stage1) || nrow(stage1$top) == 0) {
-      return(list(stage1 = stage1, error = "No resorts scored in Stage 1."))
+    if (is.null(stage1_df) || nrow(stage1_df) == 0) {
+      return(list(error = "No resorts available for that date."))
     }
 
-    # --- Geocode user start location ------------------------------------------
-    showNotification("Geocoding your start location...",
-                     type = "message", duration = NULL, id = "loading_geo")
-
-    geo <- tryCatch(
-      geocode_location(input$start_location, n_results = 1),
-      error = function(e) NULL
-    )
+    # --- Geocode start location -----------------------------------------------
+    showNotification("Geocoding start location...", type = "message",
+                     duration = NULL, id = "loading_geo")
+    geo <- tryCatch(geocode_location(input$start_location, n_results = 1),
+                    error = function(e) NULL)
     removeNotification("loading_geo")
 
     if (is.null(geo) || nrow(geo) == 0) {
-      showNotification(
-        paste0("Could not find '", input$start_location,
-               "'. Showing Stage 1 results only."),
-        type = "warning", duration = 8
-      )
-      return(list(stage1 = stage1,
+      showNotification(paste0("Could not geocode '", input$start_location,
+                              "'. Showing scoring results only."),
+                       type = "warning", duration = 8)
+      return(list(stage1_df = stage1_df,
                   geo_error = paste("Could not geocode:", input$start_location)))
     }
 
-    start_lat     <- geo$lat[1]
-    start_lon     <- geo$lon[1]
-    start_label   <- input$start_location
+    start_lat   <- geo$lat[1]
+    start_lon   <- geo$lon[1]
+    start_label <- input$start_location
     user_max_mins <- input$max_drive_hours * 60
 
     # --- Stage 2: drive-time reranking ----------------------------------------
-    showNotification("Fetching drive times for top 3 resorts...",
-                     type = "message", duration = NULL, id = "loading_route")
+    showNotification("Fetching drive times...", type = "message",
+                     duration = NULL, id = "loading_route")
 
-    top3 <- stage1$top |>
-      head(3) |>
+    # Join lat/lon from resorts CSV onto top 3 scored resorts
+    top3 <- stage1_df |>
+      filter(!is.na(composite_score)) |>
+      slice_head(n = 3) |>
+      left_join(resorts[, c("resort_name", "latitude", "longitude")],
+                by = "resort_name") |>
       transmute(
         resort_name      = resort_name,
         lat              = latitude,
@@ -325,24 +525,23 @@ server <- function(input, output, session) {
     removeNotification("loading_route")
 
     if (is.null(reranked)) {
-      return(list(stage1 = stage1,
+      return(list(stage1_df = stage1_df,
                   start_lat = start_lat, start_lon = start_lon,
                   start_label = start_label))
     }
 
-    # --- Fetch winner route (for map polyline) --------------------------------
+    # --- Winner route for map polyline ----------------------------------------
     winner <- reranked$winner
     winner_route <- tryCatch(
       fetch_route(start_lat, start_lon, winner$lat, winner$lon, GH_KEY),
       error = function(e) NULL
     )
 
-    # --- CDOT + Groq LLM for winner ------------------------------------------
-    showNotification("Analyzing road conditions...",
-                     type = "message", duration = NULL, id = "loading_llm")
+    # --- CDOT + Groq for winner -----------------------------------------------
+    showNotification("Analyzing road conditions...", type = "message",
+                     duration = NULL, id = "loading_llm")
 
-    llm_out    <- NULL
-    route_prep <- NULL
+    llm_out <- NULL; route_prep <- NULL
 
     if (!is.null(winner_route)) {
       cdot_df <- tryCatch(fetch_road_conditions(CDOT_KEY), error = function(e) NULL)
@@ -353,7 +552,6 @@ server <- function(input, output, session) {
                                    winner$resort_name, input$trip_date),
           error = function(e) NULL
         )
-
         if (!is.null(route_prep) && nchar(GROQ_KEY) > 0) {
           llm_out <- tryCatch(
             call_gemini_route_summary(route_prep$llm_prompt, GROQ_KEY),
@@ -365,7 +563,7 @@ server <- function(input, output, session) {
     removeNotification("loading_llm")
 
     list(
-      stage1       = stage1,
+      stage1_df    = stage1_df,
       reranked     = reranked,
       winner_route = winner_route,
       route_prep   = route_prep,
@@ -377,14 +575,17 @@ server <- function(input, output, session) {
   })
 
 
-  # ── Status message ───────────────────────────────────────────────────────────
+  # ── Welcome / status message ─────────────────────────────────────────────────
   output$status_message <- renderUI({
     if (!isTruthy(pipeline_result())) {
-      div(
-        class = "alert alert-info",
-        "Set your preferences and click ",
-        strong("Find Resorts"),
-        " to see recommendations."
+      div(class = "welcome-banner",
+        "Select your ", strong("trip date"), " and ", strong("ability level"),
+        " in the sidebar, then click ", strong("Find Resorts"), ".",
+        tags$br(), tags$br(),
+        tags$small(style = "color: #6B7C8F;",
+          "Scores combine weather quality (50%) and terrain accessibility (50%),
+           adjusted for avalanche danger when available."
+        )
       )
     } else if (!is.null(pipeline_result()$error)) {
       div(class = "alert alert-danger", pipeline_result()$error)
@@ -396,53 +597,45 @@ server <- function(input, output, session) {
 
   # ── Leaflet map ──────────────────────────────────────────────────────────────
   output$route_map <- renderLeaflet({
-    base_map <- leaflet() |>
+    leaflet() |>
       addProviderTiles(providers$CartoDB.Positron) |>
       setView(lng = -106.0, lat = 39.5, zoom = 7)
-    base_map
   })
 
   observeEvent(pipeline_result(), {
     result <- pipeline_result()
     if (is.null(result)) return()
 
-    proxy <- leafletProxy("route_map") |> clearMarkers() |> clearShapes()
+    proxy <- leafletProxy("route_map") |> clearMarkers() |> clearShapes() |> clearControls()
 
     # Start location marker
     if (!is.null(result$start_lat)) {
       proxy <- proxy |>
         addCircleMarkers(
-          lng         = result$start_lon,
-          lat         = result$start_lat,
-          radius      = 10,
-          color       = "#333",
-          fillColor   = "#333",
-          fillOpacity = 1,
-          popup       = paste0("<b>Start:</b> ", result$start_label),
-          label       = result$start_label
+          lng = result$start_lon, lat = result$start_lat,
+          radius = 10, color = "#333", fillColor = "#333", fillOpacity = 1,
+          popup = paste0("<b>Start:</b> ", result$start_label),
+          label = result$start_label
         )
     }
 
-    # Route polyline — colored by segment risk level
+    # Route polyline colored by risk segment
     if (!is.null(result$winner_route) && !is.null(result$winner_route$waypoints)) {
       wp <- result$winner_route$waypoints
 
-      # Build condition points for coloring (from real CDOT filtered_df if available)
       if (!is.null(result$route_prep) && nrow(result$route_prep$filtered_df) > 0) {
         conds <- result$route_prep$filtered_df |>
           dplyr::distinct(segment_id, condition_id, .keep_all = TRUE) |>
           dplyr::transmute(lat = start_lat, lon = start_lon, row_risk = row_risk)
         segments <- color_route_segments(wp, conds)
       } else {
-        # No CDOT data — draw full route gray
         segments <- list(list(lats = wp$lat, lons = wp$lon, risk = "clear"))
       }
 
       for (seg in segments) {
         proxy <- proxy |>
           addPolylines(
-            lng     = seg$lons,
-            lat     = seg$lats,
+            lng = seg$lons, lat = seg$lats,
             color   = risk_color(seg$risk),
             weight  = if (seg$risk %in% c("high", "do_not_travel")) 6 else 4,
             opacity = 0.85
@@ -450,7 +643,7 @@ server <- function(input, output, session) {
       }
     }
 
-    # Resort markers (reranked or stage1 fallback)
+    # Resort markers
     if (!is.null(result$reranked)) {
       ranking     <- result$reranked$ranking
       winner_name <- result$reranked$winner$resort_name
@@ -458,40 +651,37 @@ server <- function(input, output, session) {
       for (i in seq_len(nrow(ranking))) {
         r         <- ranking[i, ]
         is_winner <- r$resort_name == winner_name
-        drive_str <- if (is.na(r$duration_mins)) {
-          "Drive time unavailable"
-        } else {
+        drive_str <- if (is.na(r$duration_mins)) "Drive time unavailable" else
           sprintf("%.0f min / %.0f mi", r$duration_mins, r$distance_miles)
-        }
         proxy <- proxy |>
           addCircleMarkers(
-            lng         = r$lon,
-            lat         = r$lat,
+            lng = r$lon, lat = r$lat,
             radius      = if (is_winner) 14 else 10,
-            color       = if (is_winner) "#1a73e8" else "#555",
-            fillColor   = if (is_winner) "#1a73e8" else "#aaa",
-            fillOpacity = 0.9,
-            weight      = 2,
-            popup       = sprintf("<b>#%d %s</b><br>Drive: %s<br>Score: %.2f",
-                                  i, r$resort_name, drive_str, r$final_score),
-            label       = r$resort_name
+            color       = if (is_winner) "#1B3A5C" else "#555",
+            fillColor   = if (is_winner) "#2E6DA4" else "#aaa",
+            fillOpacity = 0.9, weight = 2,
+            popup = sprintf("<b>#%d %s</b><br>Drive: %s<br>Score: %.3f",
+                            i, r$resort_name, drive_str, r$final_score),
+            label = r$resort_name
           )
       }
-    } else if (!is.null(result$stage1)) {
-      top <- result$stage1$top |> head(3)
+    } else if (!is.null(result$stage1_df)) {
+      top <- result$stage1_df |>
+        filter(!is.na(composite_score)) |>
+        slice_head(n = 3) |>
+        left_join(resorts[, c("resort_name", "latitude", "longitude")], by = "resort_name")
+
       for (i in seq_len(nrow(top))) {
         r <- top[i, ]
         proxy <- proxy |>
           addCircleMarkers(
-            lng         = r$longitude,
-            lat         = r$latitude,
-            radius      = if (i == 1) 14 else 10,
-            color       = if (i == 1) "#1a73e8" else "#555",
-            fillColor   = if (i == 1) "#1a73e8" else "#aaa",
-            fillOpacity = 0.9,
-            weight      = 2,
-            popup       = sprintf("<b>#%d %s</b><br>Score: %.1f", i, r$resort_name, r$composite_score),
-            label       = r$resort_name
+            lng = r$longitude, lat = r$latitude,
+            radius = if (i == 1) 14 else 10,
+            color  = if (i == 1) "#1B3A5C" else "#555",
+            fillColor = if (i == 1) "#2E6DA4" else "#aaa",
+            fillOpacity = 0.9, weight = 2,
+            popup = sprintf("<b>#%d %s</b><br>Score: %.3f", i, r$resort_name, r$composite_score),
+            label = r$resort_name
           )
       }
     }
@@ -500,7 +690,7 @@ server <- function(input, output, session) {
     proxy <- proxy |>
       addLegend(
         position = "bottomright",
-        colors   = c("#dc3545", "#fd7e14", "#888888", "#1a73e8"),
+        colors   = c("#dc3545", "#fd7e14", "#888888", "#2E6DA4"),
         labels   = c("High risk road section", "Moderate risk road section",
                      "Clear route", "Recommended resort"),
         opacity  = 0.85,
@@ -513,198 +703,185 @@ server <- function(input, output, session) {
   output$route_risk_panel <- renderUI({
     req(pipeline_result())
     result <- pipeline_result()
-
-    # Only show if we have at least a winner with drive time
     if (is.null(result$reranked)) return(NULL)
 
-    winner      <- result$reranked$winner
-    winner_name <- winner$resort_name
-    drive_str   <- if (is.na(winner$duration_mins)) {
-      "unavailable"
-    } else {
+    winner    <- result$reranked$winner
+    drive_str <- if (is.na(winner$duration_mins)) "unavailable" else
       sprintf("%.0f min / %.0f mi", winner$duration_mins, winner$distance_miles)
-    }
 
-    # Drive flag alert
     flag_ui <- switch(result$reranked$drive_time_flag,
       "all_exceed_preference" = div(
-        class = "alert alert-warning", style = "margin-top: 8px;",
-        strong("Note: "),
-        "All resorts exceed your max drive time. Results ranked by conditions score."
+        class = "alert alert-warning", style = "margin-top:8px;",
+        strong("Note: "), "All resorts exceed your max drive time. Ranked by conditions."
       ),
       "slightly_over" = div(
-        class = "alert alert-info", style = "margin-top: 8px;",
-        strong("Note: "),
-        "Your top resort is slightly over your preferred drive time."
+        class = "alert alert-info", style = "margin-top:8px;",
+        strong("Note: "), "Top resort is slightly over your preferred drive time."
       ),
       NULL
     )
 
-    # LLM risk badge + summary
     if (!is.null(result$llm)) {
       risk <- result$llm$risk_level
       badge_color <- switch(risk,
-        "low"           = "#28a745",
-        "moderate"      = "#fd7e14",
-        "high"          = "#dc3545",
-        "do_not_travel" = "#7B2D2D",
-        "#6c757d"
+        "low" = "#28a745", "moderate" = "#fd7e14",
+        "high" = "#dc3545", "do_not_travel" = "#7B2D2D", "#6c757d"
       )
       risk_label <- switch(risk,
-        "low"           = "LOW RISK",
-        "moderate"      = "MODERATE RISK",
-        "high"          = "HIGH RISK",
-        "do_not_travel" = "DO NOT TRAVEL",
-        "UNKNOWN"
+        "low" = "LOW RISK", "moderate" = "MODERATE RISK",
+        "high" = "HIGH RISK", "do_not_travel" = "DO NOT TRAVEL", "UNKNOWN"
       )
       key_action_ui <- if (!is.na(result$llm$key_action) &&
                            trimws(result$llm$key_action) != "None") {
-        div(
-          class = "alert alert-secondary",
-          style = "margin-top: 8px;",
-          strong("Key action: "), result$llm$key_action
-        )
+        div(class = "alert alert-secondary", style = "margin-top:8px;",
+            strong("Key action: "), result$llm$key_action)
       }
 
-      tagList(
-        hr(),
-        h3(paste("Route Conditions to", winner_name)),
-        p(strong("Estimated drive: "), drive_str),
+      div(class = "result-card",
+        h3(paste("Route to", winner$resort_name)),
+        div(class = "subtitle", paste("Estimated drive:", drive_str)),
         flag_ui,
-        div(
-          style = "margin: 12px 0;",
-          span(
-            risk_label,
-            style = sprintf(
-              "background:%s; color:white; padding:6px 16px; border-radius:4px;
-               font-weight:bold; font-size:15px; letter-spacing:0.5px;",
-              badge_color
-            )
-          )
+        div(style = "margin:12px 0;",
+          span(risk_label, style = sprintf(
+            "background:%s;color:white;padding:6px 16px;border-radius:4px;
+             font-weight:bold;font-size:15px;letter-spacing:0.5px;", badge_color))
         ),
         p(result$llm$summary),
-        key_action_ui,
-        hr()
+        key_action_ui
       )
-
     } else {
-      # No LLM — still show drive time + flag
       no_llm_msg <- if (nchar(GROQ_KEY) == 0) {
-        div(
-          class = "alert alert-warning",
-          "Add ", code("GROQ_API_KEY"), " to your .env file to enable AI-powered
-           road condition summaries."
-        )
+        div(class = "alert alert-warning",
+            "Add ", code("GROQ_API_KEY"), " to .env for AI-powered road condition summaries.")
       } else {
         p(class = "text-muted",
-          "Road condition summary could not be retrieved. Check CDOT's ",
-          a("CoTrip website", href = "https://cotrip.org", target = "_blank"),
-          " or call 511 before driving.")
+          "Road condition summary unavailable. Check ",
+          a("CoTrip", href = "https://cotrip.org", target = "_blank"),
+          " or call 511.")
       }
-
-      tagList(hr(), h3(paste("Route to", winner_name)),
-              p(strong("Estimated drive: "), drive_str),
-              flag_ui, no_llm_msg, hr())
+      div(class = "result-card",
+        h3(paste("Route to", winner$resort_name)),
+        div(class = "subtitle", paste("Estimated drive:", drive_str)),
+        flag_ui, no_llm_msg
+      )
     }
   })
 
 
-  # ── Top resorts table ────────────────────────────────────────────────────────
-  output$top_resorts_table <- renderTable({
+  # ── Resort results card ──────────────────────────────────────────────────────
+  output$results_card <- renderUI({
     req(pipeline_result())
     result <- pipeline_result()
+    req(!is.null(result$stage1_df))
 
+    ability_label <- c(
+      beginner = "Beginner", intermediate = "Intermediate",
+      advanced = "Advanced", expert = "Expert"
+    )[[input$ability_level]]
+
+    subtitle <- paste0(ability_label, " · ", format(input$trip_date, "%B %d, %Y"))
     if (!is.null(result$reranked)) {
-      # Stage 2: reranked with drive time
-      result$reranked$ranking |>
-        mutate(
-          Rank         = seq_len(n()),
-          `Drive Time` = if_else(
-            is.na(duration_mins), "—",
-            sprintf("%.0f min / %.0f mi", duration_mins, distance_miles)
-          ),
-          `Drive Penalty` = if_else(
-            drive_multiplier == 1.0, "None",
-            sprintf("%.0f%%", (1 - drive_multiplier) * 100)
-          ),
-          `Final Score`   = round(final_score, 1)
-        ) |>
-        select(Rank, Resort = resort_name, `Drive Time`,
-               `Drive Penalty`, `Final Score`)
-
-    } else {
-      req(result$stage1)
-      # Stage 1 fallback (no drive times)
-      result$stage1$top |>
-        mutate(
-          `Composite Score` = round(composite_score, 1),
-          `Terrain Match`   = round(terrain_score, 1),
-          `Avalanche Risk`  = round(risk_score, 1),
-          `Danger Today`    = coalesce(danger_overall, "—"),
-          `Danger Tomorrow` = coalesce(danger_tomorrow_overall, "—"),
-          `Avalanche Problems` = coalesce(problem_types, "None reported"),
-          `CAIC Zone`       = coalesce(caic_zone, "—")
-        ) |>
-        select(Resort = resort_name, `Composite Score`, `Terrain Match`,
-               `Avalanche Risk`, `Danger Today`, `Danger Tomorrow`,
-               `Avalanche Problems`, `CAIC Zone`)
+      subtitle <- paste0(subtitle, " · reranked by drive time from ", input$start_location)
     }
-  }, striped = TRUE, hover = TRUE, bordered = TRUE)
 
-
-  # ── Blocked resorts ──────────────────────────────────────────────────────────
-  output$show_blocked <- reactive({
-    req(pipeline_result())
-    result <- pipeline_result()
-    !is.null(result$stage1) && nrow(result$stage1$blocked) > 0
+    div(class = "result-card",
+      h3("Top 5 Recommended Resorts"),
+      div(class = "subtitle", subtitle),
+      tableOutput("results_table")
+    )
   })
-  outputOptions(output, "show_blocked", suspendWhenHidden = FALSE)
 
-  output$blocked_resorts_table <- renderTable({
+  output$results_table <- renderTable({
     req(pipeline_result())
     result <- pipeline_result()
-    req(!is.null(result$stage1))
-    req(nrow(result$stage1$blocked) > 0)
+    req(!is.null(result$stage1_df))
 
-    result$stage1$blocked |>
-      select(Resort = resort_name,
-             `Danger Rating` = danger_overall,
-             Reason          = block_reason)
-  }, striped = TRUE, bordered = TRUE)
+    df <- result$stage1_df |>
+      filter(!is.na(composite_score)) |>
+      slice_head(n = 5)
+
+    # If reranked, annotate the top 3 with drive times
+    if (!is.null(result$reranked)) {
+      drive_lookup <- result$reranked$ranking |>
+        transmute(resort_name,
+                  drive_str = if_else(is.na(duration_mins), "—",
+                                      sprintf("%.0f min", duration_mins)))
+      df <- df |> left_join(drive_lookup, by = "resort_name")
+    } else {
+      df <- df |> mutate(drive_str = "—")
+    }
+
+    df |>
+      mutate(
+        Resort    = resort_name,
+        Score     = sprintf("%.3f", composite_score),
+        Weather   = ifelse(is.na(weather_score), "—", sprintf("%.2f", weather_score)),
+        Terrain   = ifelse(is.na(terrain_score), "—", sprintf("%.2f", terrain_score)),
+        Lifts     = ifelse(is.na(lift_pct), "—", paste0(round(lift_pct * 100), "%")),
+        Avalanche = ifelse(!avalanche_applied, "—", coalesce(avalanche_danger, "—")),
+        `Drive Time` = drive_str
+      ) |>
+      select(Resort, Score, Weather, Terrain, Lifts, Avalanche, `Drive Time`)
+
+  }, striped = FALSE, hover = FALSE, bordered = FALSE, na = "—",
+     width = "100%", align = "lrrrrrl")
 
 
-  # ── Avalanche conditions table ───────────────────────────────────────────────
+  # ── Warnings panel ───────────────────────────────────────────────────────────
+  output$warnings_panel <- renderUI({
+    req(pipeline_result())
+    result <- pipeline_result()
+    req(!is.null(result$stage1_df))
+
+    df <- result$stage1_df |>
+      filter(!is.na(composite_score)) |>
+      slice_head(n = 5) |>
+      filter(!is.na(warnings))
+
+    if (nrow(df) == 0) return(NULL)
+
+    div(class = "warnings-card",
+      h4("Conditions to Note"),
+      tags$ul(
+        lapply(seq_len(nrow(df)), function(i) {
+          tags$li(strong(df$resort_name[i]), ": ", df$warnings[i])
+        })
+      )
+    )
+  })
+
+
+  # ── Avalanche card ───────────────────────────────────────────────────────────
+  output$avalanche_card <- renderUI({
+    req(pipeline_result())
+    result <- pipeline_result()
+    req(!is.null(result$stage1_df))
+
+    df <- result$stage1_df
+    if (!any(df$avalanche_applied, na.rm = TRUE)) return(NULL)
+
+    div(class = "result-card",
+      h3("Avalanche Conditions"),
+      div(class = "subtitle", "Today's CAIC danger ratings for scored resorts"),
+      tableOutput("avalanche_table")
+    )
+  })
+
   output$avalanche_table <- renderTable({
     req(pipeline_result())
     result <- pipeline_result()
-    req(!is.null(result$stage1))
+    req(!is.null(result$stage1_df))
 
-    result$stage1$all |>
-      filter(!is.na(danger_overall)) |>
-      arrange(desc(danger_numeric)) |>
-      mutate(
-        `Today`    = coalesce(danger_overall, "—"),
-        `Tomorrow` = coalesce(danger_tomorrow_overall, "—"),
-        `Problems` = coalesce(problem_types, "None reported"),
-        `Zone`     = coalesce(caic_zone, "—")
-      ) |>
-      select(Resort = resort_name, `Zone`, `Today`, `Tomorrow`, `Problems`)
-  }, striped = TRUE, hover = TRUE, bordered = TRUE)
+    df <- result$stage1_df
+    if (!any(df$avalanche_applied, na.rm = TRUE)) return(NULL)
 
+    df |>
+      filter(avalanche_applied) |>
+      arrange(desc(match(avalanche_danger,
+                         c("Extreme", "High", "Considerable", "Moderate", "Low")))) |>
+      select(Resort = resort_name, `Danger Rating` = avalanche_danger)
 
-  # ── Debug table ──────────────────────────────────────────────────────────────
-  # TODO: Remove before final submission
-  output$debug_table <- renderTable({
-    req(pipeline_result())
-    result <- pipeline_result()
-    req(!is.null(result$stage1))
-
-    result$stage1$all |>
-      arrange(desc(composite_score)) |>
-      mutate(across(c(composite_score, terrain_score, risk_score), round, 1)) |>
-      select(resort_name, composite_score, terrain_score, risk_score,
-             danger_overall, danger_numeric, hard_block, block_reason)
-  }, striped = TRUE, bordered = TRUE)
+  }, striped = FALSE, hover = FALSE, bordered = FALSE, na = "—", width = "100%")
 }
 
 
