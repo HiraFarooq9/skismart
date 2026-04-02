@@ -103,7 +103,7 @@ KEY_ACTION: [The single most important thing the driver should do, or "None".]'
 # SECTION 5: Call Gemini for plain-language route summary
 # =============================================================================
 
-llm_out <- call_gemini_route_summary(result$llm_prompt, GROQ_KEY)
+llm_out <- call_groq_route_summary(result$llm_prompt, GROQ_KEY)
 
 cat("\n--- Gemini Response ---\n")
 cat("Risk level: ", llm_out$risk_level, "\n")

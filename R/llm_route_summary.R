@@ -6,11 +6,10 @@
 # the structured response into a clean list for the UI.
 #
 # API details:
-#   Provider : Groq (groq.com) — free tier, no card required
+#   Provider : Groq (groq.com) — free tier, no billing required
 #   Model    : llama-3.3-70b-versatile (fast, capable, free)
 #   Base URL : https://api.groq.com/openai/v1/chat/completions
 #   Auth     : Bearer token in Authorization header
-#   Docs     : https://console.groq.com/docs/openai
 #   Sign up  : https://console.groq.com
 #
 # Groq uses the OpenAI-compatible chat completions format.
@@ -30,8 +29,8 @@ library(httr2)
 # CONSTANTS
 # -----------------------------------------------------------------------------
 
-GROQ_BASE_URL <- "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL    <- "llama-3.3-70b-versatile"
+GROQ_BASE_URL <- "https://api.groq.com/openai/v1/chat/completions"
 
 
 # -----------------------------------------------------------------------------
@@ -50,7 +49,7 @@ GROQ_MODEL    <- "llama-3.3-70b-versatile"
 #'   $key_action  — character: top recommended action, or "None"
 #'   $raw_text    — character: full raw response (for debugging)
 #'   Returns a safe fallback list on any failure.
-call_gemini_route_summary <- function(prompt, groq_key) {
+call_groq_route_summary <- function(prompt, groq_key) {
 
   body <- list(
     model    = GROQ_MODEL,
@@ -101,7 +100,7 @@ call_gemini_route_summary <- function(prompt, groq_key) {
     return(.fallback_summary())
   }
 
-  .parse_gemini_response(raw_text)
+  .parse_groq_response(raw_text)
 }
 
 
@@ -109,7 +108,7 @@ call_gemini_route_summary <- function(prompt, groq_key) {
 # RESPONSE PARSER
 # -----------------------------------------------------------------------------
 
-.parse_gemini_response <- function(text) {
+.parse_groq_response <- function(text) {
   extract <- function(label) {
     pattern <- sprintf("(?i)^%s:\\s*(.+?)\\s*$", label)
     lines   <- strsplit(text, "\n")[[1]]

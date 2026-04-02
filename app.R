@@ -554,7 +554,7 @@ server <- function(input, output, session) {
         )
         if (!is.null(route_prep) && nchar(GROQ_KEY) > 0) {
           llm_out <- tryCatch(
-            call_gemini_route_summary(route_prep$llm_prompt, GROQ_KEY),
+            call_groq_route_summary(route_prep$llm_prompt, GROQ_KEY),
             error = function(e) NULL
           )
         }

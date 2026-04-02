@@ -89,20 +89,25 @@ filter_cdot_to_route <- function(route, cdot_df, buffer = CORRIDOR_BUFFER_DEG) {
 derive_risk_level <- function(filtered_df) {
   if (nrow(filtered_df) == 0) return("low")
 
-  # Combine type + text into one searchable string per row
-  text <- tolower(paste(
+  # Closure keywords checked against additional_data only — condition_type can
+  # contain codes like "seasonal closure" that are not active road closures.
+  desc_text <- tolower(replace(filtered_df$additional_data,
+                               is.na(filtered_df$additional_data), ""))
+
+  # Chain law and surface keywords checked against both fields
+  full_text <- tolower(paste(
     filtered_df$condition_type,
     filtered_df$additional_data,
     sep = " "
   ))
 
-  has_keyword <- function(keywords) {
+  has_keyword <- function(keywords, text) {
     any(sapply(keywords, function(kw) any(grepl(kw, text, fixed = TRUE))))
   }
 
-  if (has_keyword(CLOSURE_KEYWORDS))   return("do_not_travel")
-  if (has_keyword(CHAIN_LAW_KEYWORDS)) return("high")
-  if (has_keyword(BAD_SURFACE_KEYWORDS)) return("moderate")
+  if (has_keyword(CLOSURE_KEYWORDS,     desc_text)) return("do_not_travel")
+  if (has_keyword(CHAIN_LAW_KEYWORDS,   full_text)) return("high")
+  if (has_keyword(BAD_SURFACE_KEYWORDS, full_text)) return("moderate")
   "low"
 }
 
@@ -127,18 +132,23 @@ derive_risk_level <- function(filtered_df) {
 build_route_llm_prompt <- function(route, filtered_df, resort_name, ski_date) {
   risk_level <- derive_risk_level(filtered_df)
 
-  # Format condition rows for the prompt
-  if (nrow(filtered_df) == 0 || all(is.na(filtered_df$additional_data))) {
+  # Format condition rows for the prompt.
+  # Use additional_data as the description when available; fall back to
+  # condition_type for operator-reported rows where additional_data is NA
+  # (e.g. "6 - snow", "reduced visibility") — these are real surface conditions
+  # and must not be silently dropped.
+  if (nrow(filtered_df) == 0) {
     conditions_block <- "  No active conditions reported along this route."
   } else {
     conditions_block <- filtered_df |>
-      filter(!is.na(additional_data)) |>
       distinct(segment_id, condition_id, .keep_all = TRUE) |>
       pmap_chr(function(route, pass_name, condition_type, additional_data,
                         updated_at, ...) {
-        label <- if (!is.na(pass_name) && pass_name != "") pass_name else route
+        label       <- if (!is.na(pass_name) && pass_name != "") pass_name else route
+        description <- if (!is.na(additional_data)) additional_data else
+                         paste0("[operator reported: ", condition_type, "]")
         sprintf("  [%s | %s | updated %s]\n  %s",
-                label, condition_type, updated_at, additional_data)
+                label, condition_type, updated_at, description)
       }) |>
       paste(collapse = "\n\n")
   }
