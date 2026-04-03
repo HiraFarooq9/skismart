@@ -73,6 +73,15 @@ color_route_segments <- function(waypoints, conditions, buffer_deg = 0.05) {
   segments
 }
 
+format_drive_time <- function(mins) {
+  if (is.na(mins)) return("—")
+  h <- floor(mins / 60)
+  m <- round(mins %% 60)
+  if (h == 0) return(paste0(m, " min"))
+  if (m == 0) return(paste0(h, " hr"))
+  paste0(h, " hr ", m, " min")
+}
+
 score_label <- function(s) {
   dplyr::case_when(
     s >= 0.70 ~ "Excellent",
@@ -337,10 +346,18 @@ skismart_css <- "
     margin-bottom: 6px;
   }
   .sk-route-stats {
-    font-size: 11px;
-    color: var(--muted);
-    margin-top: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--navy);
+    margin-top: 8px;
     text-align: center;
+  }
+
+  /* ── Snapshot icons ───────────────────────────────────────────────────── */
+  .sk-snap-icon {
+    display: block;
+    margin: 0 auto 6px auto;
+    opacity: 0.85;
   }
   /* ── Comparison table ─────────────────────────────────────────────────── */
   table.dataTable {
@@ -523,7 +540,7 @@ ui <- fluidPage(
       div(
         tags$h1("SkiSmart"),
         tags$p(class = "sk-tagline",
-          "Because finding the right place to ski shouldn't take longer than the drive there.")
+          "Because finding the right place to ski shouldn't take longer than the drive there")
       )
     ),
     textOutput("live_time", inline = TRUE) |>
@@ -555,6 +572,13 @@ ui <- fluidPage(
         format  = "mm/dd/yyyy"
       ),
 
+      sliderInput(
+        inputId = "max_drive_hours",
+        label   = "Max drive time (hours)",
+        min     = 1, max = 12, value = 4, step = 0.5,
+        ticks   = FALSE
+      ),
+
       hr(),
       h4("Skier Ability"),
 
@@ -568,13 +592,6 @@ ui <- fluidPage(
           "Expert"       = "expert"
         ),
         selected = "intermediate"
-      ),
-
-      sliderInput(
-        inputId = "max_drive_hours",
-        label   = "Max drive time (hours)",
-        min     = 1, max = 12, value = 4, step = 0.5,
-        ticks   = FALSE
       ),
 
       hr(),
@@ -883,8 +900,8 @@ server <- function(input, output, session) {
       rm <- result$reranked$ranking |>
         dplyr::filter(resort_name == r$resort_name)
       if (nrow(rm) > 0 && !is.na(rm$duration_mins[1]))
-        drive_str <- sprintf("%.0f min · %.0f mi",
-                             rm$duration_mins[1], rm$distance_miles[1])
+        drive_str <- paste0(format_drive_time(rm$duration_mins[1]),
+                            " · ", sprintf("%.0f mi", rm$distance_miles[1]))
     }
 
     # Road conditions summary now rendered inside score_interp_section bullets
@@ -966,7 +983,8 @@ server <- function(input, output, session) {
     # Start pin
     m <- m |> addCircleMarkers(
       lng = city$longitude[1], lat = city$latitude[1],
-      radius = 8, color = "#333", fillColor = "#333", fillOpacity = 1,
+      radius = 9, color = "#1B3A5C", fillColor = "white",
+      fillOpacity = 1, weight = 3,
       popup = paste0("<b>Start:</b> ", result$start_label),
       label = result$start_label
     )
@@ -1009,10 +1027,14 @@ server <- function(input, output, session) {
     }
 
     # Resort pin
-    m <- m |> addCircleMarkers(
+    m <- m |> addAwesomeMarkers(
       lng = r$longitude, lat = r$latitude,
-      radius = 14, color = "#1B3A5C", fillColor = "#2E6DA4",
-      fillOpacity = 0.9, weight = 2,
+      icon = awesomeIcons(
+        icon        = "map-marker",
+        iconColor   = "white",
+        library     = "fa",
+        markerColor = "red"
+      ),
       popup = paste0("<b>", r$resort_name, "</b>"),
       label = r$resort_name
     )
@@ -1076,7 +1098,8 @@ server <- function(input, output, session) {
   })
 
   output$resorts_table <- DT::renderDataTable({
-    df <- top5_joined()
+    df     <- top5_joined()
+    result <- pipeline_result()
     if (is.null(df)) return(NULL)
 
     avy_html <- function(applied, danger) {
@@ -1094,10 +1117,22 @@ server <- function(input, output, session) {
               col, danger)
     }
 
+    drive_times <- if (!is.null(result$reranked) && !is.null(result$reranked$ranking)) {
+      result$reranked$ranking |>
+        dplyr::select(resort_name, duration_mins)
+    } else {
+      data.frame(resort_name = character(0), duration_mins = numeric(0))
+    }
+
     display <- df |>
+      dplyr::left_join(drive_times, by = "resort_name") |>
       dplyr::mutate(
         `#`            = seq_len(dplyr::n()),
         Resort         = resort_name,
+        `Drive Time`   = dplyr::case_when(
+          is.na(duration_mins) ~ "—",
+          TRUE ~ format_drive_time(duration_mins)
+        ),
         Score          = paste0(
           sprintf("%.2f", composite_score),
           sprintf(' <span style="color:%s;font-size:11px;margin-left:3px">%s</span>',
@@ -1106,13 +1141,13 @@ server <- function(input, output, session) {
         Weather        = ifelse(is.na(weather_score), "—",
                                 sprintf("%.2f", weather_score)),
         `Terrain open` = paste0("~", round(terrain_score * 100), "% open for ",
-                                input$ability_level, "s"),
+                                input$ability_level, " skiers"),
         Lifts          = ifelse(is.na(lift_pct), "—",
                                 paste0(round(lift_pct * 100), "%")),
         Avalanche      = mapply(avy_html, avalanche_applied, avalanche_danger,
                                 SIMPLIFY = TRUE)
       ) |>
-      dplyr::select(`#`, Resort, Score, Weather, `Terrain open`, Lifts, Avalanche)
+      dplyr::select(`#`, Resort, `Drive Time`, Score, Weather, `Terrain open`, Lifts, Avalanche)
 
     # Custom header container with tippy tooltips
     header <- htmltools::withTags(table(
@@ -1121,23 +1156,27 @@ server <- function(input, output, session) {
         tags$th("#"),
         tags$th(`data-tippy-content` = "Resort name", "Resort"),
         tags$th(
-          `data-tippy-content` = "Combined score (0–1): weather quality 50% + terrain accessibility 50%, adjusted for avalanche danger",
+          `data-tippy-content` = "Estimated drive time from your starting city based on routing data.",
+          "Drive Time"
+        ),
+        tags$th(
+          `data-tippy-content` = "Composite score combines snow quality (50%) and estimated open terrain matched to your ability (50%). Adjusted down for avalanche danger when data is available.",
           "Score"
         ),
         tags$th(
-          `data-tippy-content` = "Weather quality score: snow depth, fresh snowfall (72h), temperature, and wind speed",
+          `data-tippy-content` = "Weather score (0–1): combines snow depth, new snowfall in the past 72h, temperature comfort, and wind speed. Higher = better ski conditions.",
           "Weather"
         ),
         tags$th(
-          `data-tippy-content` = "Estimated % of preferred terrain open for your ability level, based on snow depth and wind",
+          `data-tippy-content` = "Estimated share of trails matching your selected ability level (beginner/intermediate/advanced/expert) that are currently open, based on snow depth and conditions.",
           "Terrain open"
         ),
         tags$th(
-          `data-tippy-content` = "Estimated % of lifts operating based on current wind speed",
+          `data-tippy-content` = "Estimated percentage of lifts currently operating, derived from wind speed conditions. High winds can force lift closures.",
           "Lifts"
         ),
         tags$th(
-          `data-tippy-content` = "CAIC avalanche danger rating. Available for today and tomorrow only.",
+          `data-tippy-content` = "CAIC avalanche danger rating (Low → Extreme). Only available for today and tomorrow. Higher danger is automatically factored down into the composite score.",
           "Avalanche"
         )
       ))
@@ -1187,8 +1226,7 @@ server <- function(input, output, session) {
     div(class = "result-card",
       h3("Avalanche conditions · CAIC"),
       div(class = "sk-avy-note",
-        "Avalanche data is only available for today and tomorrow. For future dates,",
-        " check the ",
+        "Avalanche data is only available for today and tomorrow. For further information, check the ",
         tags$a("CAIC website", href = "https://avalanche.state.co.us",
                target = "_blank"),
         " directly."
@@ -1200,7 +1238,9 @@ server <- function(input, output, session) {
   output$avalanche_table <- renderTable({
     result <- pipeline_result()
     if (is.null(result$stage1_df)) return(NULL)
-    df <- result$stage1_df
+    top5 <- top5_joined()
+    df <- result$stage1_df |>
+      dplyr::filter(resort_name %in% top5$resort_name)
     if (!any(df$avalanche_applied, na.rm = TRUE)) return(NULL)
     df |>
       dplyr::filter(avalanche_applied) |>
@@ -1224,23 +1264,66 @@ server <- function(input, output, session) {
                      paste0(disp$avg_temp_f, "°F") else "—"
     terrain_str <- paste0("~", round(r$terrain_score * 100), "%")
 
+    icon_snowflake <- tags$svg(
+      class = "sk-snap-icon", xmlns = "http://www.w3.org/2000/svg",
+      width = "22", height = "22", viewBox = "0 0 24 24",
+      fill = "none", stroke = "#2E6DA4", `stroke-width` = "2",
+      `stroke-linecap` = "round", `stroke-linejoin` = "round",
+      tags$line(x1 = "12", y1 = "2",   x2 = "12", y2 = "22"),
+      tags$line(x1 = "2",  y1 = "12",  x2 = "22", y2 = "12"),
+      tags$line(x1 = "5.6",  y1 = "5.6",  x2 = "18.4", y2 = "18.4"),
+      tags$line(x1 = "18.4", y1 = "5.6",  x2 = "5.6",  y2 = "18.4"),
+      tags$circle(cx = "12", cy = "12", r = "2", fill = "#2E6DA4", stroke = "none")
+    )
+    icon_newsnow <- tags$svg(
+      class = "sk-snap-icon", xmlns = "http://www.w3.org/2000/svg",
+      width = "22", height = "22", viewBox = "0 0 24 24",
+      fill = "none", stroke = "#5BA4CF", `stroke-width` = "2",
+      `stroke-linecap` = "round", `stroke-linejoin` = "round",
+      tags$path(d = "M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"),
+      tags$line(x1 = "8",  y1 = "16",   x2 = "8",  y2 = "16"),
+      tags$line(x1 = "8",  y1 = "20",   x2 = "8",  y2 = "20"),
+      tags$line(x1 = "12", y1 = "18",   x2 = "12", y2 = "18"),
+      tags$line(x1 = "16", y1 = "16",   x2 = "16", y2 = "16"),
+      tags$line(x1 = "16", y1 = "20",   x2 = "16", y2 = "20")
+    )
+    icon_terrain <- tags$svg(
+      class = "sk-snap-icon", xmlns = "http://www.w3.org/2000/svg",
+      width = "22", height = "22", viewBox = "0 0 24 24",
+      fill = "none", stroke = "#2E7D32", `stroke-width` = "2",
+      `stroke-linecap` = "round", `stroke-linejoin` = "round",
+      tags$polygon(points = "3,21 12,3 21,21"),
+      tags$polyline(points = "7,21 12,13 17,21")
+    )
+    icon_temp <- tags$svg(
+      class = "sk-snap-icon", xmlns = "http://www.w3.org/2000/svg",
+      width = "22", height = "22", viewBox = "0 0 24 24",
+      fill = "none", stroke = "#E65100", `stroke-width` = "2",
+      `stroke-linecap` = "round", `stroke-linejoin` = "round",
+      tags$path(d = "M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z")
+    )
+
     div(class = "result-card",
       h3(paste("Resort snapshot ·", r$resort_name)),
       div(class = "sk-snapshot-grid",
         div(class = "sk-snap-cell",
+          icon_snowflake,
           div(class = "sk-snap-value", depth_str),
           div(class = "sk-snap-label", "Base depth")
         ),
         div(class = "sk-snap-cell",
+          icon_newsnow,
           div(class = "sk-snap-value", newsnow_str),
           div(class = "sk-snap-label", "New snow (72h)")
         ),
         div(class = "sk-snap-cell",
+          icon_terrain,
           div(class = "sk-snap-value", terrain_str),
           div(class = "sk-snap-label",
-            paste0("Open for ", input$ability_level, "s"))
+            paste0("Open for ", input$ability_level, " skiers"))
         ),
         div(class = "sk-snap-cell",
+          icon_temp,
           div(class = "sk-snap-value", temp_str),
           div(class = "sk-snap-label", "Ski-hours avg temp")
         )

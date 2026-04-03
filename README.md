@@ -2,7 +2,7 @@
 
 **Authors:** Hira Farooq & Maren Roether
 **Course:** GLHLTH 562 — Data Science for Global Health
-**Last updated:** 2026-04-02 (Session 5)
+**Last updated:** 2026-04-03 (Session 6)
 
 SkiSmart is a Shiny web application that recommends Colorado ski resorts to recreational skiers based on their preferences, current snow and avalanche conditions, and route safety.
 
@@ -595,8 +595,9 @@ A standalone demo app for testing the UI and map without a working `score_resort
 ### Dependencies
 
 ```r
-install.packages(c("shiny", "leaflet", "httr2", "dplyr", "purrr",
-                   "readr", "lubridate", "sf", "here"))
+install.packages(c("shiny", "bslib", "leaflet", "httr2", "dplyr", "purrr",
+                   "readr", "lubridate", "sf", "here",
+                   "DT", "echarts4r", "tippy"))
 ```
 
 The `sf` package requires system-level GDAL/GEOS libraries. On Windows these are bundled with the CRAN binary — a standard `install.packages("sf")` is sufficient.
@@ -722,6 +723,35 @@ results <- score_all_resorts(resorts, ski_date = Sys.Date() + 1, ability = "inte
 - Updated `.gitignore` to exclude `.env` (API keys)
 
 **Next:** Wire Stage 2 route risk scoring into the app, add origin city input.
+
+### Session 5 — Stage 2 Integration + UI Redesign (Hira + Maren)
+- Merged Maren's composite scoring + UI redesign with Hira's Stage 2 pipeline
+- Added `R/llm_route_summary.R` — Groq LLM call for route summary and per-resort score interpretation
+- Added `data/cities.csv` — ~70 starting cities (CO, WY, UT, NM, surrounding states) with lat/lon; replaces free-text geocoding input
+- Refactored `R/stage2_rerank.R` — drive-time hard exclusion + resort reranking
+- Replaced `textInput` city entry with `selectizeInput` dropdown (no geocoding needed)
+- Switched LLM provider from Gemini to Groq (`llama-3.3-70b-versatile`)
+- Added `bslib`, `DT`, `echarts4r`, `tippy` as new UI dependencies
+- Full `app.R` rewrite: Leaflet route map, weather sparkline (echarts4r), DT comparison table, score interpretation bullets
+
+### Session 6 — UI Polish (Maren)
+- **Sidebar reorder:** Drive time slider moved under Trip Details; Skier Ability section now follows below the `hr()` separator
+- **Slogan:** Removed trailing period from header tagline
+- **Grammar fix:** "advanceds" → "advanced skiers" (and all ability levels) throughout table and snapshot card
+- **Avalanche note:** Changed "For future dates, check..." → "For further information, check the CAIC website directly."
+- **Tooltip improvements** (using `tippy`):
+  - Score: full composite formula explanation added
+  - Weather: clarified includes snow depth, 72h snowfall, temperature, and wind speed
+  - Terrain open: explains trails are matched to the user's selected ability level
+  - Lifts: clarifies wind-speed derivation and why lifts close
+  - Avalanche: mentions Low→Extreme scale and feed-in to composite score
+  - Drive Time: new column added with tooltip
+- **Drive Time column:** Added to comparison table with routing-based estimates
+- **Drive time format:** Changed from raw minutes to "X hr Y min · N mi" format; text made slightly larger and bolder
+- **Map pins:** Destination resort changed from circle to red `awesomeMarker` (teardrop pin); origin changed to white circle with navy border (hollow dot style)
+- **Avalanche table:** Filtered to show only the top 5 ranked resorts (was showing all resorts)
+- **Resort Snapshot icons:** Added minimalist inline SVG icons — blue snowflake (base depth), light-blue cloud (new snow), green mountain (open terrain), orange thermometer (avg temp)
+- **New dependency:** `DT`, `echarts4r`, `tippy` (install with `install.packages(c("DT", "echarts4r", "tippy"))`)
 
 ---
 
