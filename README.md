@@ -753,6 +753,9 @@ results <- score_all_resorts(resorts, ski_date = Sys.Date() + 1, ability = "inte
 - **Resort Snapshot icons:** Added minimalist inline SVG icons — blue snowflake (base depth), light-blue cloud (new snow), green mountain (open terrain), orange thermometer (avg temp)
 - **New dependency:** `DT`, `echarts4r`, `tippy` (install with `install.packages(c("DT", "echarts4r", "tippy"))`)
 
+### Session 6 — Bug Fix
+- Fixed `[object Object]` rendering error in the comparison table: `format_drive_time()` is a scalar function and failed silently when passed a full vector inside `dplyr::case_when()`; replaced with `sapply(duration_mins, format_drive_time)` so it is applied element-wise
+
 ---
 
 *This document is updated continuously as the project develops.*

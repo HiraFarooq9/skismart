@@ -1129,10 +1129,7 @@ server <- function(input, output, session) {
       dplyr::mutate(
         `#`            = seq_len(dplyr::n()),
         Resort         = resort_name,
-        `Drive Time`   = dplyr::case_when(
-          is.na(duration_mins) ~ "—",
-          TRUE ~ format_drive_time(duration_mins)
-        ),
+        `Drive Time`   = sapply(duration_mins, format_drive_time),
         Score          = paste0(
           sprintf("%.2f", composite_score),
           sprintf(' <span style="color:%s;font-size:11px;margin-left:3px">%s</span>',
