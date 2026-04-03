@@ -144,3 +144,100 @@ call_groq_route_summary <- function(prompt, groq_key) {
     raw_text    = NA_character_
   )
 }
+
+
+# =============================================================================
+# SCORE INTERPRETATION
+# =============================================================================
+
+#' Ask Groq to interpret the weather, terrain, and avalanche scores in plain language
+#'
+#' @param resort_name      Character. Resort name.
+#' @param weather_score    Numeric 0-1. From composite_score.R.
+#' @param terrain_score    Numeric 0-1. From composite_score.R.
+#' @param avalanche_danger Character. CAIC rating, or NA if unavailable.
+#' @param avalanche_applied Logical. Whether avalanche data was applied.
+#' @param lift_pct         Numeric 0-1. Estimated lift operating fraction.
+#' @param ability_level    Character. "beginner", "intermediate", "advanced", "expert".
+#' @param ski_date         Date or character. The ski day.
+#' @param groq_key         Character. Groq API key.
+#'
+#' @return Named list: $weather, $terrain, $avalanche (character strings), or NULL on failure.
+call_groq_score_interpretation <- function(resort_name, weather_score, terrain_score,
+                                            avalanche_danger, avalanche_applied,
+                                            lift_pct, ability_level, ski_date,
+                                            groq_key) {
+  avy_str  <- if (isTRUE(avalanche_applied) && !is.na(avalanche_danger) && nchar(trimws(avalanche_danger)) > 0)
+    avalanche_danger else "Not available (date outside 2-day forecast window)"
+
+  lift_str <- if (is.na(lift_pct)) "Unknown" else paste0(round(lift_pct * 100), "%")
+
+  prompt <- sprintf(
+'You are a friendly ski trip advisor. Give brief plain-language interpretations of these ski condition scores for %s on %s.
+
+Scores:
+- Weather score: %.2f / 1.00  (snow depth + fresh snowfall in last 72h + temperature + wind speed)
+- Terrain score: %.2f / 1.00  (estimated fraction of %s-level terrain accessible)
+- Lifts operating: %s
+- Avalanche danger: %s
+
+Respond with EXACTLY this format — one sentence per field, no extra text:
+WEATHER: [Tell a skier in one sentence what this weather score means for their day on the mountain.]
+TERRAIN: [One sentence on how much terrain is accessible for %s skiers and what that means practically.]
+AVALANCHE: [One sentence on avalanche risk. If data is unavailable, say what they should check instead.]',
+    resort_name, as.character(ski_date),
+    weather_score, terrain_score, ability_level,
+    lift_str, avy_str,
+    ability_level
+  )
+
+  body <- list(
+    model       = GROQ_MODEL,
+    messages    = list(list(role = "user", content = prompt)),
+    temperature = 0.3,
+    max_tokens  = 220
+  )
+
+  req <- request(GROQ_BASE_URL) |>
+    req_headers(
+      Authorization  = paste("Bearer", groq_key),
+      `Content-Type` = "application/json"
+    ) |>
+    req_body_json(body) |>
+    req_timeout(30) |>
+    req_error(is_error = function(resp) FALSE)
+
+  resp <- req_perform(req)
+
+  if (resp_status(resp) != 200) {
+    warning(sprintf("Groq score interpretation returned status %d.", resp_status(resp)))
+    return(NULL)
+  }
+
+  raw <- tryCatch(
+    resp_body_json(resp, simplifyVector = FALSE),
+    error = function(e) NULL
+  )
+  if (is.null(raw)) return(NULL)
+
+  raw_text <- tryCatch(raw$choices[[1]]$message$content, error = function(e) NULL)
+  if (is.null(raw_text) || nchar(trimws(raw_text)) == 0) return(NULL)
+
+  .parse_score_interpretation(raw_text)
+}
+
+
+.parse_score_interpretation <- function(text) {
+  extract <- function(label) {
+    pattern <- sprintf("(?i)^%s:\\s*(.+?)\\s*$", label)
+    lines   <- strsplit(text, "\n")[[1]]
+    match   <- regmatches(lines, regexpr(pattern, lines, perl = TRUE))
+    if (length(match) == 0) return(NA_character_)
+    sub(sprintf("(?i)^%s:\\s*", label), "", match[[1]], perl = TRUE)
+  }
+  list(
+    weather   = trimws(extract("WEATHER")),
+    terrain   = trimws(extract("TERRAIN")),
+    avalanche = trimws(extract("AVALANCHE"))
+  )
+}

@@ -2,7 +2,7 @@
 
 **Authors:** Hira Farooq & Maren Roether
 **Course:** GLHLTH 562 — Data Science for Global Health
-**Last updated:** 2026-03-31 (Session 4)
+**Last updated:** 2026-04-02 (Session 5)
 
 SkiSmart is a Shiny web application that recommends Colorado ski resorts to recreational skiers based on their preferences, current snow and avalanche conditions, and route safety.
 
@@ -43,7 +43,8 @@ skismart/
 ├── .env                       # API keys — gitignored, never committed
 ├── .env.example               # safe-to-commit key template
 ├── data/
-│   └── resorts.csv            # static resort database (33 Colorado resorts)
+│   ├── resorts.csv            # static resort database (33 Colorado resorts)
+│   └── cities.csv             # ~70 starting cities with lat/lon (CO, WY, UT, NM + surrounding)
 ├── R/
 │   ├── composite_score.R      # Stage 1: master scoring orchestrator (Maren)
 │   ├── fetch_caic.R           # Stage 1: CAIC avalanche fetch + spatial join (Maren)
@@ -56,7 +57,7 @@ skismart/
 │   ├── api_cdot.R             # Stage 2: CDOT /roadConditions fetch (Hira)
 │   ├── route_conditions.R     # Stage 2: spatial filter + per-row risk + LLM prompt (Hira)
 │   ├── llm_route_summary.R    # Stage 2: Groq LLM call + response parser (Hira)
-│   └── stage2_rerank.R        # Stage 2: drive-time penalty + resort reranking (Hira)
+│   └── stage2_rerank.R        # Stage 2: drive-time hard exclusion + resort reranking (Hira)
 └── tests/
     ├── test_scoring.R         # Stage 1 unit + scenario tests
     └── test_stage2.R          # Stage 2 section-by-section test script
@@ -90,13 +91,10 @@ R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date
 
 | Input | Type | Notes |
 |---|---|---|
-| Starting location | Text | City, zip, or address — geocoded via Nominatim |
+| Starting city | Dropdown | ~70 cities across CO, WY, UT, NM, and surrounding states — no geocoding needed |
 | Ski date | Date (YYYY-MM-DD) | Up to 10 days ahead; used as scoring anchor |
 | Skier ability | One of: beginner, intermediate, advanced, expert | Single input per session |
-| Terrain preference | groomed / mixed / challenging | Used in terrain match score |
-| Season pass | None / Ikon / Epic | Used in resort filtering |
-| Max drive time | Hours (1–8, step 0.5) | Drive-time penalty applied above this threshold |
-| Risk tolerance | 0–1 slider | Scales avalanche risk penalty weight |
+| Max drive time | Hours (1–12, step 0.5) | Hard exclude: resorts exceeding this limit are removed from ranking entirely |
 
 ---
 
@@ -473,27 +471,28 @@ Results are sorted by `composite_score` descending (NAs last). The app displays 
 
 ### Stage 2 — Route Risk Score
 
-For each of the top 3 candidate resorts, a driving route is fetched and CDOT road condition data is filtered to the route corridor. Gemini produces a plain-language summary and risk level.
+For each of the top 5 candidate resorts, a driving route is fetched from GraphHopper. Resorts that exceed the user's max drive time are **hard-excluded**. The remaining resorts are ranked by their Stage 1 conditions score. CDOT road condition data is then fetched for the winner's route and summarised by the Groq LLM.
 
 **Pipeline:**
 ```
-User start address → geocode (Nominatim) → lat/lon
-lat/lon + resort coords → GraphHopper → route geometry + drive time
-Route bbox → CDOT /roadConditions → filtered condition rows
-Filtered rows → Gemini prompt → risk level + summary + key action
-Drive time vs user max → soft penalty applied to resort ranking
+User city (dropdown) → lat/lon lookup from cities.csv
+lat/lon + resort coords → GraphHopper → route geometry + drive time (top 5 resorts)
+Hard exclude: drop any resort with drive time > user max
+Rank remaining by conditions score → winner selected
+Winner route bbox → CDOT /roadConditions → filtered condition rows
+Filtered rows → Groq prompt → risk level + summary + key action
 ```
 
 **Modules:**
 
 | File | Purpose |
 |---|---|
-| `R/api_geocode.R` | Geocodes user address/city to lat/lon via Nominatim |
+| `R/api_geocode.R` | Nominatim geocoder (retained for ad-hoc use; city coordinates now come from `cities.csv`) |
 | `R/api_routing.R` | Fetches driving route from GraphHopper (waypoints, distance, duration, bbox) |
 | `R/api_cdot.R` | Fetches CDOT `/roadConditions` — one row per condition entry per segment |
 | `R/route_conditions.R` | Spatial corridor filter + per-row risk classification + Groq prompt builder |
-| `R/llm_route_summary.R` | Calls Groq (llama-3.3-70b-versatile), parses structured response |
-| `R/stage2_rerank.R` | Drive-time penalty multipliers + reranking across top 3 resorts |
+| `R/llm_route_summary.R` | Calls Groq (llama-3.3-70b-versatile), parses route summary + score interpretation |
+| `R/stage2_rerank.R` | Drive-time hard exclusion + reranking of top 5 resorts |
 
 **CDOT data structure (confirmed from live API):**
 - Single working endpoint: `/roadConditions` — `/closures` and `/restrictions` return 404
@@ -521,16 +520,14 @@ SUMMARY: 2-3 sentence plain-language description
 KEY_ACTION: single most important driver action, or "None"
 ```
 
-**Note on LLM provider:** Groq was chosen over Google Gemini after Gemini's free tier quota was exhausted at the account level across multiple API keys. Groq's `llama-3.3-70b-versatile` is free, requires no credit card, and uses the OpenAI-compatible chat completions format. The function name `call_gemini_route_summary()` is retained for backward compatibility.
+**Note on LLM provider:** Groq was chosen over Google Gemini after Gemini's free tier quota was exhausted. Groq's `llama-3.3-70b-versatile` is free, requires no credit card, and uses the OpenAI-compatible chat completions format. Groq is used for two distinct calls: (1) route conditions summary, and (2) plain-language score interpretation (weather / terrain / avalanche bullets shown in the focus card).
 
-**Drive time integration:**
-- Route returns `duration_mins` under normal conditions
-- Compared to user's max drive time input
-- Penalty multiplier applied to resort's final score:
-  - Within max → 1.0 (no penalty)
-  - Up to 20% over → 0.75
-  - More than 20% over → 0.4
-- If all resorts exceed max, drop multipliers and rank by conditions score; LLM communicates the tradeoff
+**Drive time integration (hard exclusion):**
+- GraphHopper routes are fetched for the top 5 Stage 1 resorts
+- Any resort with `duration_mins > user_max_mins` is **hard-excluded** from consideration
+- Remaining resorts are ranked by their Stage 1 conditions score — no penalty multipliers
+- If **all** resorts exceed the user's limit, the app shows a "no resorts within your drive time" message with the closest available distance, prompting the user to increase their limit
+- The focus card map shows the winner's route colored by CDOT risk level; clicking any row in the comparison table fetches and displays that resort's route on demand
 
 ### Stage 3 — Feasibility Rules
 
@@ -569,14 +566,14 @@ All outputs update only when the user clicks **Find Resorts** — not on every i
 
 **Design:** navy/blue gradient header with mountain SVG logo, white result cards, yellow warnings panel. No external CSS frameworks beyond Bootstrap (bundled with Shiny).
 
-**User inputs (sidebar):** starting location, trip date, max drive time, ability level, terrain preference, season pass, risk tolerance.
+**User inputs (sidebar):** starting city (dropdown), trip date, ability level, max drive time (1–12 hrs).
 
 | Panel | Contents | Shown when |
 |---|---|---|
-| **Leaflet Map** | Route colored by risk level; blue = top resort, gray = #2/#3, dark = start | Always after run |
-| **Route Conditions** | Risk badge, Groq LLM summary, key action advisory, drive time | When routing succeeds |
-| **Top 5 Recommended Resorts** | Score, weather, terrain, lifts %, avalanche danger, drive time | Always after run |
-| **Conditions to Note** | Per-resort warnings (thin base, high wind, rain, avalanche) | Only if warnings exist |
+| **Top Recommendation** | Resort name, score badge, Leaflet route map, ski-day weather sparkline, Groq score interpretation bullets (weather / terrain / avalanche / road conditions) | After run; replaced by "no resorts within limit" message if all exceed drive time |
+| **Leaflet Route Map** | Start pin, route polyline colored by CDOT risk level, resort pin; clicking table rows re-draws the map for that resort | Inside focus card |
+| **All Resorts Table** | Top 5 resorts: score, weather, terrain open %, lifts %, avalanche danger; click any row to explore | Always after run |
+| **Resort Snapshot** | Base depth, new snow (72h), terrain open %, avg ski-hour temp for selected resort | Always after run |
 | **Avalanche Conditions** | CAIC danger ratings sorted by severity | Today/tomorrow ski dates only |
 
 **Route segment coloring** — the `color_route_segments()` helper checks each GraphHopper waypoint for proximity to CDOT condition points (within ~3.5 miles). Consecutive waypoints with the same risk level are grouped into a single polyline segment and drawn with the appropriate color. High-risk segments are drawn at weight 6 vs 4 for clear segments.
