@@ -76,6 +76,7 @@ rerank_with_drive_time <- function(top_resorts, start_lat, start_lon,
   if (nrow(within_limit) == 0) {
     return(list(
       ranking         = results |> arrange(duration_mins),
+      all_resorts     = results,
       winner          = NULL,
       drive_time_flag = "no_resorts_within_limit",
       routes          = route_list
@@ -88,6 +89,7 @@ rerank_with_drive_time <- function(top_resorts, start_lat, start_lon,
 
   list(
     ranking         = ranking,
+    all_resorts     = results,
     winner          = ranking[1, ],
     drive_time_flag = "within_preference",
     routes          = route_list

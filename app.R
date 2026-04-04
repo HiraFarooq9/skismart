@@ -82,6 +82,11 @@ format_drive_time <- function(mins) {
   paste0(h, " hr ", m, " min")
 }
 
+ordinal <- function(n) {
+  sfx <- c("st","nd","rd","th","th")
+  paste0(n, if (n >= 1 && n <= 5) sfx[n] else "th")
+}
+
 score_label <- function(s) {
   dplyr::case_when(
     s >= 0.70 ~ "Excellent",
@@ -110,7 +115,7 @@ fetch_resort_display_data <- function(lat, lon, ski_date) {
       httr2::req_url_query(
         latitude      = round(lat, 6),
         longitude     = round(lon, 6),
-        hourly        = "temperature_2m,snowfall,snow_depth",
+        hourly        = "temperature_2m,snowfall,snow_depth,windspeed_10m",
         past_days     = 3,
         forecast_days = 10,
         timezone      = "auto"
@@ -127,7 +132,8 @@ fetch_resort_display_data <- function(lat, lon, ski_date) {
         hour     = lubridate::hour(datetime),
         temp_f   = temperature_2m * 9 / 5 + 32,
         snow_in  = snowfall * 0.393701,
-        depth_in = snow_depth * 39.3701
+        depth_in = snow_depth * 39.3701,
+        wind_mph = windspeed_10m * 0.621371
       )
 
     ski_h <- hourly |>
@@ -137,7 +143,7 @@ fetch_resort_display_data <- function(lat, lon, ski_date) {
         hour >  12 ~ paste0(hour - 12, "pm"),
         TRUE       ~ paste0(hour, "am")
       )) |>
-      dplyr::select(hour, hour_label, temp_f, snow_in)
+      dplyr::select(hour, hour_label, temp_f, snow_in, wind_mph)
 
     # Snow depth at midday
     depth_row <- hourly |>
@@ -154,13 +160,15 @@ fetch_resort_display_data <- function(lat, lon, ski_date) {
       dplyr::summarise(total = sum(snow_in, na.rm = TRUE)) |>
       dplyr::pull(total)
 
-    avg_temp <- if (nrow(ski_h) > 0) mean(ski_h$temp_f, na.rm = TRUE) else NA_real_
+    avg_temp <- if (nrow(ski_h) > 0) mean(ski_h$temp_f,  na.rm = TRUE) else NA_real_
+    avg_wind <- if (nrow(ski_h) > 0) mean(ski_h$wind_mph, na.rm = TRUE) else NA_real_
 
     list(
       hourly           = if (nrow(ski_h) > 0) ski_h else NULL,
       depth_in         = round(depth_in,     0),
       snowfall_72hr_in = round(snowfall_72hr, 1),
-      avg_temp_f       = round(avg_temp,      0)
+      avg_temp_f       = round(avg_temp,      0),
+      avg_wind_mph     = round(avg_wind,      0)
     )
   }, error = function(e) NULL)
 }
@@ -540,7 +548,7 @@ ui <- fluidPage(
       div(
         tags$h1("SkiSmart"),
         tags$p(class = "sk-tagline",
-          "Because finding the right place to ski shouldn't take longer than the drive there")
+          "Because finding the right place to ski shouldn't take longer than the drive")
       )
     ),
     textOutput("live_time", inline = TRUE) |>
@@ -742,66 +750,79 @@ server <- function(input, output, session) {
       )
     }
 
-    # --- Fetch winner route ---------------------------------------------------
-    winner_route <- NULL
-    if (!is.null(winner)) {
-      showNotification("Fetching route to recommended resort...", type = "message",
-                       duration = NULL, id = "loading_wr")
-      winner_route <- tryCatch(
-        fetch_route(start_lat, start_lon, winner$lat, winner$lon, GH_KEY),
+    # --- CDOT fetch (once) + route prep + Groq for all resorts ---------------
+    showNotification("Analyzing road conditions for all resorts...", type = "message",
+                     duration = NULL, id = "loading_llm")
+
+    cdot_df <- tryCatch(fetch_road_conditions(CDOT_KEY), error = function(e) NULL)
+
+    all_route_analyses <- list()
+    route_names <- if (!is.null(reranked)) names(reranked$routes) else character(0)
+
+    for (rname in route_names) {
+      rroute <- reranked$routes[[rname]]
+      if (is.null(rroute)) next
+
+      # Use CDOT data if available; pass empty df so Groq still runs when CDOT fails
+      safe_cdot <- if (!is.null(cdot_df) && nrow(cdot_df) > 0) cdot_df else .empty_df()
+      rprep <- tryCatch(
+        prepare_route_conditions(rroute, safe_cdot, rname, input$trip_date),
         error = function(e) NULL
       )
-      removeNotification("loading_wr")
-    }
 
-    # --- CDOT + Groq for winner -----------------------------------------------
-    showNotification("Analyzing road conditions...", type = "message",
-                     duration = NULL, id = "loading_llm")
-    llm_out <- NULL; route_prep <- NULL
-
-    if (!is.null(winner_route)) {
-      cdot_df <- tryCatch(fetch_road_conditions(CDOT_KEY), error = function(e) NULL)
-      if (!is.null(cdot_df) && nrow(cdot_df) > 0) {
-        route_prep <- tryCatch(
-          prepare_route_conditions(winner_route, cdot_df,
-                                   winner$resort_name, input$trip_date),
+      rllm <- NULL
+      if (!is.null(rprep) && nchar(GROQ_KEY) > 0) {
+        rllm <- tryCatch(
+          call_groq_route_summary(rprep$llm_prompt, GROQ_KEY),
           error = function(e) NULL
         )
-        if (!is.null(route_prep) && nchar(GROQ_KEY) > 0) {
-          llm_out <- tryCatch(
-            call_groq_route_summary(route_prep$llm_prompt, GROQ_KEY),
-            error = function(e) NULL
-          )
-        }
       }
+
+      all_route_analyses[[rname]] <- list(
+        route      = rroute,
+        route_prep = rprep,
+        llm        = rllm %||% .fallback_summary()
+      )
     }
+
     removeNotification("loading_llm")
 
     list(
-      stage1_df    = stage1_df,
-      reranked     = reranked,
-      winner       = winner,
-      winner_route = winner_route,
-      route_prep   = route_prep,
-      llm          = llm_out,
-      start_lat    = start_lat,
-      start_lon    = start_lon,
-      start_label  = start_label
+      stage1_df          = stage1_df,
+      reranked           = reranked,
+      winner             = winner,
+      all_route_analyses = all_route_analyses,
+      start_lat          = start_lat,
+      start_lon          = start_lon,
+      start_label        = start_label
     )
   })
 
-  # ── Top 5 resorts with resort metadata joined ─────────────────────────────────
+  # ── Top resorts with resort metadata joined ──────────────────────────────────
+  # When drive-time routing succeeded and there are qualifying resorts, only
+  # show those within the user's drive-time limit (hard exclusion applies to
+  # the table too, not just the winner selection).
+  # Falls back to Stage 1 top-5 if routing failed or all resorts exceed limit.
   top5_joined <- reactive({
     result <- pipeline_result()
     if (is.null(result$stage1_df)) return(NULL)
-    result$stage1_df |>
-      dplyr::filter(!is.na(composite_score)) |>
-      dplyr::slice_head(n = 5) |>
-      dplyr::left_join(
-        resorts[, c("resort_name", "latitude", "longitude",
-                    "elevation_base_ft", "trails_total")],
-        by = "resort_name"
-      )
+
+    meta <- resorts[, c("resort_name", "latitude", "longitude",
+                        "elevation_base_ft", "trails_total")]
+
+    if (!is.null(result$reranked) &&
+        result$reranked$drive_time_flag == "within_preference") {
+      qualifying <- result$reranked$ranking$resort_name
+      result$stage1_df |>
+        dplyr::filter(resort_name %in% qualifying) |>
+        dplyr::left_join(meta, by = "resort_name") |>
+        dplyr::arrange(match(resort_name, qualifying))
+    } else {
+      result$stage1_df |>
+        dplyr::filter(!is.na(composite_score)) |>
+        dplyr::slice_head(n = 5) |>
+        dplyr::left_join(meta, by = "resort_name")
+    }
   })
 
   # ── After pipeline runs, focus the Stage 2 winner ────────────────────────────
@@ -830,8 +851,8 @@ server <- function(input, output, session) {
   })
 
   # ── Route for the currently focused resort ───────────────────────────────────
-  # Uses cached winner_route for the winner (no extra API call).
-  # On-demand fetch for other table rows the user clicks.
+  # Uses routes cached in all_route_analyses (fetched for all 5 during pipeline).
+  # Falls back to on-demand fetch only if not in cache.
   focus_route <- reactive({
     result <- pipeline_result()
     r      <- selected_resort()
@@ -839,8 +860,8 @@ server <- function(input, output, session) {
     if (is.null(result) || is.null(result$stage1_df) || is.null(r) || nrow(city) == 0)
       return(NULL)
     if (is.na(r$latitude) || is.na(r$longitude)) return(NULL)
-    if (!is.null(result$winner) && r$resort_name == result$winner$resort_name)
-      return(result$winner_route)
+    cached <- result$all_route_analyses[[r$resort_name]]
+    if (!is.null(cached)) return(cached$route)
     tryCatch(
       fetch_route(city$latitude[1], city$longitude[1], r$latitude, r$longitude, GH_KEY),
       error = function(e) NULL
@@ -943,14 +964,14 @@ server <- function(input, output, session) {
             div(class = "sk-panel-label",
               paste("Route from", input$user_city)
             ),
-            leafletOutput("focus_map", height = "230px"),
+            leafletOutput("focus_map", height = "320px"),
             div(class = "sk-route-stats", drive_str)
           ),
           column(6,
             div(class = "sk-panel-label",
               paste("Ski day forecast ·", format(input$trip_date, "%b %d"))
             ),
-            echarts4rOutput("weather_spark", height = "230px")
+            echarts4rOutput("weather_spark", height = "320px")
           )
         ),
 
@@ -972,7 +993,7 @@ server <- function(input, output, session) {
 
     m <- leaflet() |>
       addProviderTiles(providers$CartoDB.Positron) |>
-      setView(lng = -106.0, lat = 39.5, zoom = 7)
+      setView(lng = -106.0, lat = 39.5, zoom = 7)   # default; overridden by fitBounds below
 
     if (is.null(result) || is.null(result$stage1_df) || is.null(r) || nrow(city) == 0)
       return(m)
@@ -993,13 +1014,14 @@ server <- function(input, output, session) {
     if (!is.null(route) && !is.null(route$waypoints) && nrow(route$waypoints) >= 2) {
       wp <- route$waypoints
 
-      # CDOT risk colouring only available for the winner's route
-      has_cdot <- !is.null(result$route_prep) &&
-                  nrow(result$route_prep$filtered_df) > 0 &&
-                  r$resort_name == result$winner$resort_name
+      # CDOT risk colouring — available for any resort with route_prep data
+      resort_analysis <- result$all_route_analyses[[r$resort_name]]
+      has_cdot <- !is.null(resort_analysis) &&
+                  !is.null(resort_analysis$route_prep) &&
+                  nrow(resort_analysis$route_prep$filtered_df) > 0
 
       if (has_cdot) {
-        conds <- result$route_prep$filtered_df |>
+        conds <- resort_analysis$route_prep$filtered_df |>
           dplyr::distinct(segment_id, condition_id, .keep_all = TRUE) |>
           dplyr::transmute(lat = start_lat, lon = start_lon, row_risk = row_risk)
 
@@ -1026,18 +1048,42 @@ server <- function(input, output, session) {
       }
     }
 
-    # Resort pin
-    m <- m |> addAwesomeMarkers(
-      lng = r$longitude, lat = r$latitude,
-      icon = awesomeIcons(
-        icon        = "map-marker",
-        iconColor   = "white",
-        library     = "fa",
-        markerColor = "red"
-      ),
-      popup = paste0("<b>", r$resort_name, "</b>"),
-      label = r$resort_name
-    )
+    # Resort pin (only if coordinates are valid)
+    if (!is.na(r$longitude) && !is.na(r$latitude)) {
+      m <- m |> addAwesomeMarkers(
+        lng = r$longitude, lat = r$latitude,
+        icon = awesomeIcons(
+          icon        = "map-marker",
+          iconColor   = "white",
+          library     = "fa",
+          markerColor = "red"
+        ),
+        popup = paste0("<b>", r$resort_name, "</b>"),
+        label = r$resort_name
+      )
+    }
+
+    # Fit map to route bbox (with padding), or fall back to start + resort pts.
+    # Use as.numeric() to strip names from the bbox vector — named numerics
+    # serialise as JSON objects, not scalars, which confuses Leaflet.
+    pad <- 0.08
+    if (!is.null(route) && !is.null(route$bbox)) {
+      m <- m |> fitBounds(
+        lng1 = as.numeric(route$bbox["min_lon"]) - pad,
+        lat1 = as.numeric(route$bbox["min_lat"]) - pad,
+        lng2 = as.numeric(route$bbox["max_lon"]) + pad,
+        lat2 = as.numeric(route$bbox["max_lat"]) + pad
+      )
+    } else if (!is.na(r$longitude) && !is.na(r$latitude)) {
+      lngs <- c(city$longitude[1], r$longitude)
+      lats <- c(city$latitude[1],  r$latitude)
+      m <- m |> fitBounds(
+        lng1 = min(lngs) - pad * 3,
+        lat1 = min(lats) - pad * 3,
+        lng2 = max(lngs) + pad * 3,
+        lat2 = max(lats) + pad * 3
+      )
+    }
 
     m
   })
@@ -1117,7 +1163,10 @@ server <- function(input, output, session) {
               col, danger)
     }
 
-    drive_times <- if (!is.null(result$reranked) && !is.null(result$reranked$ranking)) {
+    drive_times <- if (!is.null(result$reranked) && !is.null(result$reranked$all_resorts)) {
+      result$reranked$all_resorts |>
+        dplyr::select(resort_name, duration_mins)
+    } else if (!is.null(result$reranked) && !is.null(result$reranked$ranking)) {
       result$reranked$ranking |>
         dplyr::select(resort_name, duration_mins)
     } else {
@@ -1137,14 +1186,14 @@ server <- function(input, output, session) {
         ),
         Weather        = ifelse(is.na(weather_score), "—",
                                 sprintf("%.2f", weather_score)),
-        `Terrain open` = paste0("~", round(terrain_score * 100), "% open for ",
-                                input$ability_level, " skiers"),
+        Terrain        = ifelse(is.na(terrain_score), "—",
+                               sprintf("%.2f", terrain_score)),
         Lifts          = ifelse(is.na(lift_pct), "—",
                                 paste0(round(lift_pct * 100), "%")),
         Avalanche      = mapply(avy_html, avalanche_applied, avalanche_danger,
                                 SIMPLIFY = TRUE)
       ) |>
-      dplyr::select(`#`, Resort, `Drive Time`, Score, Weather, `Terrain open`, Lifts, Avalanche)
+      dplyr::select(`#`, Resort, `Drive Time`, Score, Weather, Terrain, Lifts, Avalanche)
 
     # Custom header container with tippy tooltips
     header <- htmltools::withTags(table(
@@ -1165,8 +1214,8 @@ server <- function(input, output, session) {
           "Weather"
         ),
         tags$th(
-          `data-tippy-content` = "Estimated share of trails matching your selected ability level (beginner/intermediate/advanced/expert) that are currently open, based on snow depth and conditions.",
-          "Terrain open"
+          `data-tippy-content` = "Terrain score (0–1): ability-weighted open trail count normalized across qualifying resorts. Higher = more of your preferred terrain type accessible relative to other options.",
+          "Terrain"
         ),
         tags$th(
           `data-tippy-content` = "Estimated percentage of lifts currently operating, derived from wind speed conditions. High winds can force lift closures.",
@@ -1259,7 +1308,7 @@ server <- function(input, output, session) {
                      paste0(disp$snowfall_72hr_in, '"') else "—"
     temp_str    <- if (!is.null(disp) && !is.na(disp$avg_temp_f))
                      paste0(disp$avg_temp_f, "°F") else "—"
-    terrain_str <- paste0("~", round(r$terrain_score * 100), "%")
+    terrain_str <- if (!is.na(r$terrain_score)) sprintf("%.2f", r$terrain_score) else "—"
 
     icon_snowflake <- tags$svg(
       class = "sk-snap-icon", xmlns = "http://www.w3.org/2000/svg",
@@ -1316,8 +1365,7 @@ server <- function(input, output, session) {
         div(class = "sk-snap-cell",
           icon_terrain,
           div(class = "sk-snap-value", terrain_str),
-          div(class = "sk-snap-label",
-            paste0("Open for ", input$ability_level, " skiers"))
+          div(class = "sk-snap-label", "Terrain score")
         ),
         div(class = "sk-snap-cell",
           icon_temp,
@@ -1329,52 +1377,115 @@ server <- function(input, output, session) {
   })
 
 
-  # ── Score interpretation + road conditions (Groq call per selected resort) ────
+  # ── LLM score interpretation — cache + low-priority background observer ───────
+  #
+  # The Groq API call takes ~3-5 sec per resort. Putting it directly inside
+  # renderUI blocks Shiny's R thread, preventing renderLeaflet (focus_map) from
+  # executing — causing the grey map and unresponsive clicks.
+  #
+  # Fix: the Groq call lives in a priority = -1 observe(), which runs AFTER all
+  # priority-0 outputs (renderLeaflet, renderUI) have rendered and flushed to the
+  # browser. score_interp_section renders instantly from the cache; it shows an
+  # "Analyzing…" placeholder until the observer populates the cache entry.
+  #
+  score_interp_cache <- reactiveValues()
+
+  observe({
+    req(isTruthy(GROQ_KEY))
+    r      <- selected_resort()
+    result <- pipeline_result()
+    req(!is.null(r), !is.null(result$stage1_df))
+
+    key <- paste(r$resort_name, as.character(input$trip_date),
+                 input$ability_level, sep = "|")
+    if (!is.null(isolate(score_interp_cache[[key]]))) return()   # already cached
+
+    # Weather sub-components — isolate so we don't create a new reactive dep;
+    # resort_display() has already been evaluated by weather_spark/snapshot_card
+    # (priority 0) before this observer fires, so isolate() hits the cache.
+    disp             <- isolate(resort_display())
+    depth_in         <- if (!is.null(disp)) disp$depth_in         else NA_real_
+    snowfall_72hr_in <- if (!is.null(disp)) disp$snowfall_72hr_in else NA_real_
+    temp_f           <- if (!is.null(disp)) disp$avg_temp_f       else NA_real_
+    wind_mph         <- if (!is.null(disp)) disp$avg_wind_mph     else NA_real_
+
+    pct_preferred_open <- tryCatch({
+      resort_row <- resorts[resorts$resort_name == r$resort_name, ]
+      if (nrow(resort_row) > 0 && !is.na(depth_in)) {
+        trail_mix <- c(
+          greens     = resort_row$trails_green_pct[1],
+          blues      = resort_row$trails_blue_pct[1],
+          blacks     = resort_row$trails_black_pct[1],
+          dbl_blacks = resort_row$trails_double_black_pct[1]
+        )
+        sf72  <- if (!is.na(snowfall_72hr_in)) snowfall_72hr_in else 0
+        tpcts <- apply_snowfall_bump(get_terrain_pct_by_depth(depth_in), sf72)
+        w     <- get_terrain_weights(input$ability_level)
+        sum(tpcts * w)
+      } else NA_real_
+    }, error = function(e) NA_real_)
+
+    terrain_rank <- tryCatch({
+      df <- isolate(top5_joined())
+      if (!is.null(df) && nrow(df) > 0 && !is.na(r$terrain_score)) {
+        sorted <- sort(df$terrain_score, decreasing = TRUE)
+        rank_n <- which(sorted == r$terrain_score)[1]
+        total  <- sum(!is.na(df$terrain_score))
+        if (!is.na(rank_n)) sprintf("%s of %d qualifying resorts", ordinal(rank_n), total)
+        else NA_character_
+      } else NA_character_
+    }, error = function(e) NA_character_)
+
+    interp <- tryCatch(
+      call_groq_score_interpretation(
+        resort_name        = r$resort_name,
+        weather_score      = r$weather_score,
+        terrain_score      = r$terrain_score,
+        avalanche_danger   = r$avalanche_danger,
+        avalanche_applied  = isTRUE(r$avalanche_applied),
+        lift_pct           = r$lift_pct,
+        ability_level      = input$ability_level,
+        ski_date           = input$trip_date,
+        groq_key           = GROQ_KEY,
+        depth_in           = depth_in,
+        snowfall_72hr_in   = snowfall_72hr_in,
+        temp_f             = temp_f,
+        wind_mph           = wind_mph,
+        pct_preferred_open = pct_preferred_open,
+        terrain_rank       = terrain_rank
+      ),
+      error = function(e) NULL
+    )
+
+    score_interp_cache[[key]] <- if (!is.null(interp)) interp else list(.failed = TRUE)
+
+  }, priority = -1)
+
+
+  # ── Score interpretation section — renders instantly from cache ──────────────
   output$score_interp_section <- renderUI({
     result <- pipeline_result()
     r      <- selected_resort()
     if (is.null(result) || is.null(r)) return(NULL)
 
-    # --- LLM score interpretation (weather / terrain / avalanche) ---
-    interp <- NULL
-    if (isTruthy(GROQ_KEY)) {
-      interp <- tryCatch(
-        call_groq_score_interpretation(
-          resort_name       = r$resort_name,
-          weather_score     = r$weather_score,
-          terrain_score     = r$terrain_score,
-          avalanche_danger  = r$avalanche_danger,
-          avalanche_applied = isTRUE(r$avalanche_applied),
-          lift_pct          = r$lift_pct,
-          ability_level     = input$ability_level,
-          ski_date          = input$trip_date,
-          groq_key          = GROQ_KEY
-        ),
-        error = function(e) NULL
-      )
-    }
+    key    <- paste(r$resort_name, as.character(input$trip_date),
+                    input$ability_level, sep = "|")
+    interp <- score_interp_cache[[key]]   # NULL while Groq is pending
 
-    # --- Road conditions bullet text + color ---
-    is_winner <- !is.null(result$winner) &&
-                 r$resort_name == result$winner$resort_name
+    # --- Road conditions bullet (pre-computed in pipeline, always fast) ---
     road_text  <- NULL
     road_color <- "#6B7C8F"
 
-    if (is_winner && !is.null(result$llm) && !is.na(result$llm$summary)) {
-      road_text  <- result$llm$summary
-      road_color <- switch(result$llm$risk_level,
+    resort_analysis <- result$all_route_analyses[[r$resort_name]]
+    if (!is.null(resort_analysis) && !is.null(resort_analysis$llm) &&
+        !is.na(resort_analysis$llm$summary)) {
+      road_text  <- resort_analysis$llm$summary
+      road_color <- switch(resort_analysis$llm$risk_level,
         "do_not_travel" = "#7B2D2D",
         "high"          = "#dc3545",
         "moderate"      = "#fd7e14",
         "low"           = "#2E7D32",
         "#6B7C8F"
-      )
-    } else if (!is_winner && !is.null(result$reranked)) {
-      road_text  <- paste0(
-        "CDOT road conditions were analyzed for ",
-        result$reranked$winner$resort_name,
-        " (top recommendation). Check ", tags$a("CDOT 511", href = "https://cotrip.org",
-        target = "_blank"), " for conditions on this route."
       )
     }
 
@@ -1392,18 +1503,28 @@ server <- function(input, output, session) {
       )
     }
 
-    bullets <- tagList(
-      if (!is.null(interp)) mk_bullet("\u2744",    "Weather",         interp$weather,   "#2E6DA4"),
-      if (!is.null(interp)) mk_bullet("\u26f7",    "Terrain",         interp$terrain,   "#2E7D32"),
-      if (!is.null(interp)) mk_bullet("\u26a0",    "Avalanche risk",  interp$avalanche, "#E65100"),
-      mk_bullet("\U0001F6E3", "Road conditions", road_text, road_color)
-    )
+    # Score bullets: show loading placeholder until observer populates cache
+    score_bullets <- if (is.null(interp) && isTruthy(GROQ_KEY)) {
+      div(class = "sk-interp-loading", "\u23f3 Analyzing conditions\u2026")
+    } else if (!is.null(interp) && isTRUE(interp$.failed)) {
+      div(class = "sk-interp-loading",
+          "\u26a0\ufe0f Score interpretation unavailable \u2014 check GROQ_API_KEY or try again.")
+    } else if (!is.null(interp)) {
+      tagList(
+        mk_bullet("\u2744",   "Weather",        interp$weather,   "#2E6DA4"),
+        mk_bullet("\u26f7",   "Terrain",        interp$terrain,   "#2E7D32"),
+        mk_bullet("\u26a0",   "Avalanche risk", interp$avalanche, "#E65100")
+      )
+    }
 
-    if (length(Filter(Negate(is.null), as.list(bullets))) == 0) return(NULL)
+    road_bullet <- mk_bullet("\U0001F6E3", "Road conditions", road_text, road_color)
+    all_bullets <- tagList(score_bullets, road_bullet)
+
+    if (length(Filter(Negate(is.null), as.list(all_bullets))) == 0) return(NULL)
 
     div(class = "sk-score-interp",
       div(class = "sk-interp-header", "Conditions at a glance"),
-      bullets
+      all_bullets
     )
   })
 

@@ -152,43 +152,89 @@ call_groq_route_summary <- function(prompt, groq_key) {
 
 #' Ask Groq to interpret the weather, terrain, and avalanche scores in plain language
 #'
-#' @param resort_name      Character. Resort name.
-#' @param weather_score    Numeric 0-1. From composite_score.R.
-#' @param terrain_score    Numeric 0-1. From composite_score.R.
-#' @param avalanche_danger Character. CAIC rating, or NA if unavailable.
-#' @param avalanche_applied Logical. Whether avalanche data was applied.
-#' @param lift_pct         Numeric 0-1. Estimated lift operating fraction.
-#' @param ability_level    Character. "beginner", "intermediate", "advanced", "expert".
-#' @param ski_date         Date or character. The ski day.
-#' @param groq_key         Character. Groq API key.
+#' @param resort_name         Character. Resort name.
+#' @param weather_score       Numeric 0-1. From composite_score.R.
+#' @param terrain_score       Numeric 0-1. Normalized relative score.
+#' @param avalanche_danger    Character. CAIC rating, or NA if unavailable.
+#' @param avalanche_applied   Logical. Whether avalanche data was applied.
+#' @param lift_pct            Numeric 0-1. Estimated lift operating fraction.
+#' @param ability_level       Character. "beginner", "intermediate", "advanced", "expert".
+#' @param ski_date            Date or character. The ski day.
+#' @param groq_key            Character. Groq API key.
+#' @param depth_in            Numeric. Snow base depth in inches (from Open-Meteo).
+#' @param snowfall_72hr_in    Numeric. 72-hour snowfall accumulation in inches.
+#' @param temp_f              Numeric. Average ski-hour temperature in °F.
+#' @param wind_mph            Numeric. Average ski-hour wind speed in mph.
+#' @param pct_preferred_open  Numeric 0-1. Ability-weighted average % of preferred trail
+#'                            tiers estimated open (e.g. 0.38 = 38%).
+#' @param terrain_rank        Character. Rank context, e.g. "1st of 3 qualifying resorts".
 #'
 #' @return Named list: $weather, $terrain, $avalanche (character strings), or NULL on failure.
 call_groq_score_interpretation <- function(resort_name, weather_score, terrain_score,
                                             avalanche_danger, avalanche_applied,
                                             lift_pct, ability_level, ski_date,
-                                            groq_key) {
+                                            groq_key,
+                                            depth_in         = NA_real_,
+                                            snowfall_72hr_in = NA_real_,
+                                            temp_f           = NA_real_,
+                                            wind_mph         = NA_real_,
+                                            pct_preferred_open = NA_real_,
+                                            terrain_rank     = NA_character_) {
+
   avy_str  <- if (isTRUE(avalanche_applied) && !is.na(avalanche_danger) && nchar(trimws(avalanche_danger)) > 0)
     avalanche_danger else "Not available (date outside 2-day forecast window)"
 
   lift_str <- if (is.na(lift_pct)) "Unknown" else paste0(round(lift_pct * 100), "%")
 
+  # Build weather data block — use actual values when available, fall back to score only
+  wx_lines <- c(
+    if (!is.na(depth_in))         sprintf("  - Base depth: %d inches",           as.integer(depth_in)),
+    if (!is.na(snowfall_72hr_in)) sprintf("  - Fresh snowfall (72h): %.1f inches", snowfall_72hr_in),
+    if (!is.na(temp_f))           sprintf("  - Avg ski-hour temperature: %d°F",   as.integer(temp_f)),
+    if (!is.na(wind_mph))         sprintf("  - Avg ski-hour wind: %d mph",         as.integer(wind_mph)),
+    sprintf("  - Weather score: %.2f / 1.00", weather_score)
+  )
+
+  # Build terrain data block — use pct_preferred_open and rank when available
+  terrain_pct_str  <- if (!is.na(pct_preferred_open))
+    sprintf("  - Estimated %.0f%% of %s-preferred trail types (weighted by tier) accessible",
+            pct_preferred_open * 100, ability_level) else NULL
+  terrain_rank_str <- if (!is.na(terrain_rank))
+    sprintf("  - Terrain rank: %s", terrain_rank) else NULL
+
+  terrain_lines <- c(
+    terrain_pct_str,
+    terrain_rank_str,
+    sprintf("  - Terrain score: %.2f / 1.00  (normalized across qualifying resorts)", terrain_score),
+    sprintf("  - Estimated lifts operating: %s", lift_str)
+  )
+
   prompt <- sprintf(
-'You are a friendly ski trip advisor. Give brief plain-language interpretations of these ski condition scores for %s on %s.
+'You are a concise ski trip advisor. Write plain-language interpretations of the ski conditions below for %s on %s.
 
-Scores:
-- Weather score: %.2f / 1.00  (snow depth + fresh snowfall in last 72h + temperature + wind speed)
-- Terrain score: %.2f / 1.00  (estimated fraction of %s-level terrain accessible)
-- Lifts operating: %s
-- Avalanche danger: %s
+WEATHER DATA:
+%s
 
-Respond with EXACTLY this format — one sentence per field, no extra text:
-WEATHER: [Tell a skier in one sentence what this weather score means for their day on the mountain.]
-TERRAIN: [One sentence on how much terrain is accessible for %s skiers and what that means practically.]
-AVALANCHE: [One sentence on avalanche risk. If data is unavailable, say what they should check instead.]',
+TERRAIN DATA (%s skier):
+%s
+
+AVALANCHE: %s
+
+Rules:
+- One sentence per field, no filler phrases like "Great news" or "Unfortunately"
+- For WEATHER: name the specific factors driving the score (depth, fresh snow, temp, wind)
+- For TERRAIN: state the estimated %% of preferred terrain open and explain the score is relative to other resorts in this search
+- For AVALANCHE: state the danger level and what it means practically; if unavailable say to check CAIC directly
+
+Respond with EXACTLY this format:
+WEATHER: [one sentence]
+TERRAIN: [one sentence]
+AVALANCHE: [one sentence]',
     resort_name, as.character(ski_date),
-    weather_score, terrain_score, ability_level,
-    lift_str, avy_str,
-    ability_level
+    paste(wx_lines, collapse = "\n"),
+    ability_level,
+    paste(terrain_lines, collapse = "\n"),
+    avy_str
   )
 
   body <- list(
