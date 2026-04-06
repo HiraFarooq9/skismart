@@ -68,29 +68,29 @@
 
 .DEMO_SCORE_INTERP <- list(
   "Breckenridge Ski Resort" = list(
-    weather   = "Excellent conditions — 68-inch base, 9 inches of fresh snow in the past 72 hours, and temperatures around 26°F make for ideal powder skiing.",
-    terrain   = "Top terrain score across today's resorts — 94% of lifts running with strong access to blue and black runs suited for intermediate skiers.",
-    avalanche = "Moderate danger at alpine elevations; stick to groomed runs and avoid off-piste cornices and wind-loaded slopes."
+    weather   = "Breckenridge has a 68-inch base with 9 inches of fresh powder in the last 72 hours, and temperatures holding around 26°F keep the snow dry and light all day. Wind is light at 10 mph with no lift closure risk.",
+    terrain   = "94% of lifts are running with an estimated 88% of intermediate-preferred trail types accessible across all five peaks. The deep base puts both groomed cruisers and off-piste terrain in excellent shape.",
+    avalanche = "CAIC rates avalanche danger as Moderate at alpine elevations today, meaning human-triggered slides are possible on steep wind-loaded slopes above treeline. Groomed blue and black runs below treeline are unaffected and recommended for intermediate skiers."
   ),
   "Keystone Resort" = list(
-    weather   = "Solid conditions with a 58-inch base and 7 inches of recent snowfall; slightly warmer temperatures produce dense, grippy snow.",
-    terrain   = "2nd-best terrain score today — 91% of lifts open with excellent blue cruisers and tree runs well-suited to intermediate ability.",
-    avalanche = "Low avalanche danger — all elevations are safe for normal in-bounds skiing."
+    weather   = "Keystone has a solid 58-inch base with 7 inches of snowfall in the last 72 hours, and calm winds at 9 mph pose no lift closure risk. Temperatures around 28°F produce firm, grippy snow well-suited to groomed trail skiing.",
+    terrain   = "91% of lifts are operational with an estimated 84% of intermediate-preferred trail types open, including long blue cruisers and gladed tree runs. Terrain variety and lift coverage are both strong for today's conditions.",
+    avalanche = "Avalanche danger is rated Low across all elevations at Keystone today, meaning natural and human-triggered slides are unlikely. All in-bounds terrain is accessible without restriction."
   ),
   "Copper Mountain" = list(
-    weather   = "Good snow coverage at 54 inches base with 6 inches of new snow; groomed runs are firm early with softer conditions by mid-morning.",
-    terrain   = "88% of lifts running and a well-balanced trail mix — a reliable pick for intermediates looking for variety.",
-    avalanche = "Low avalanche danger — all terrain is accessible without restrictions today."
+    weather   = "Copper has a 54-inch base with 6 inches of recent snowfall, and temperatures around 27°F keep snow quality good throughout the day. Wind at 10 mph is well within the threshold for full lift operations.",
+    terrain   = "88% of lifts are running with an estimated 79% of intermediate-preferred trail types open. Copper's naturally separated terrain zones keep blue runs uncrowded even on busy days.",
+    avalanche = "Avalanche danger is Low across all elevations at Copper Mountain today, and all in-bounds terrain is open without restrictions. Conditions are safe for standard intermediate skiing throughout the mountain."
   ),
   "Vail Ski Resort" = list(
-    weather   = "62-inch base with 8 inches of recent snow; temperatures just below freezing keep snow quality high across the mountain.",
-    terrain   = "92% lift operations with a large trail network — terrain score is 4th today due to the longer drive adding a time cost.",
-    avalanche = "Moderate danger above treeline; Back Bowls access may be limited — confirm with ski patrol on arrival."
+    weather   = "Vail has a deep 62-inch base with 8 inches of fresh snow from the last 72 hours, and temperatures around 29°F keep snow quality high across the front side and Back Bowls. Wind is slightly elevated at 12 mph and may affect a small number of high-alpine lifts.",
+    terrain   = "92% of lifts are operating, with an estimated 75% of intermediate-preferred trail types accessible — wind restrictions limit a few upper-mountain runs. The front side and Blue Sky Basin remain wide open with exceptional variety for intermediate skiers.",
+    avalanche = "CAIC rates avalanche danger as Moderate above treeline today, with wind-loaded slopes in the Back Bowls requiring caution. Front-side groomed runs are unaffected; confirm Back Bowl access with ski patrol on the day."
   ),
   "Steamboat Ski Resort" = list(
-    weather   = "48-inch base with 5 inches of Champagne Powder in the past 72 hours; colder temperatures preserve excellent dry snow quality.",
-    terrain   = "Lowest terrain score today due to the 2.5-hour drive — 86% of lifts open with strong glade and tree skiing terrain.",
-    avalanche = "Low avalanche danger — full mountain access without restrictions."
+    weather   = "Steamboat has a 48-inch base with 5 inches of Champagne Powder in the last 72 hours, and temperatures of 22°F — the coldest in today's search — preserve exceptionally dry, light snow. Wind is the calmest of all five resorts at 7 mph with all lifts fully operational.",
+    terrain   = "86% of lifts are running with an estimated 71% of intermediate-preferred trail types accessible, reflecting a slightly thinner base than the Summit County resorts. Steamboat's extensive glade and tree terrain is in particularly good shape after the recent snowfall.",
+    avalanche = "Avalanche danger is rated Low across all elevations at Steamboat today, and the full mountain is open without terrain restrictions. Standard in-bounds safety awareness applies."
   )
 )
 
@@ -137,7 +137,7 @@
   )
 )
 
-# Approximate driving routes from Denver to each resort (key highway waypoints)
+# Driving routes from Denver — detailed I-70 corridor waypoints for realistic curves
 .make_route <- function(lats, lons, duration_mins, distance_miles) {
   wp <- data.frame(lat = lats, lon = lons, stringsAsFactors = FALSE)
   list(
@@ -149,30 +149,82 @@
   )
 }
 
+# Shared I-70 westbound spine: Denver → Frisco
+.I70_TO_FRISCO_LATS <- c(39.739, 39.716, 39.697, 39.671, 39.654, 39.651,
+                          39.660, 39.685, 39.721, 39.743, 39.731, 39.718,
+                          39.706, 39.696, 39.692, 39.681, 39.682, 39.647,
+                          39.632, 39.608, 39.574)
+.I70_TO_FRISCO_LONS <- c(-104.990, -105.102, -105.268, -105.190, -105.190, -105.311,
+                          -105.368, -105.452, -105.487, -105.514, -105.565, -105.601,
+                          -105.697, -105.716, -105.727, -105.893, -105.906, -106.032,
+                          -106.074, -106.084, -106.098)
+
+# I-70 spine up to Silverthorne exit only (truncated before Frisco, for Keystone branch)
+.I70_TO_SILVERTHORNE_LATS <- .I70_TO_FRISCO_LATS[1:19]
+.I70_TO_SILVERTHORNE_LONS <- .I70_TO_FRISCO_LONS[1:19]
+
 .DEMO_ROUTES <- list(
+  # Denver → I-70 W → Frisco → Hwy 9 S → Breckenridge
   "Breckenridge Ski Resort" = .make_route(
-    lats = c(39.739, 39.748, 39.743, 39.681, 39.574, 39.480),
-    lons = c(-104.990, -105.223, -105.514, -105.905, -106.098, -106.067),
+    lats = c(.I70_TO_FRISCO_LATS,
+             39.563, 39.548, 39.531, 39.516, 39.502, 39.490, 39.480),
+    lons = c(.I70_TO_FRISCO_LONS,
+             -106.094, -106.089, -106.081, -106.075, -106.070, -106.067, -106.067),
     duration_mins = 92, distance_miles = 79
   ),
+  # Denver → I-70 W → Silverthorne exit → US-6 SE → Keystone
+  # (branches off BEFORE Frisco — no backtrack)
   "Keystone Resort" = .make_route(
-    lats = c(39.739, 39.748, 39.743, 39.681, 39.574, 39.582),
-    lons = c(-104.990, -105.223, -105.514, -105.905, -106.098, -105.944),
+    lats = c(.I70_TO_SILVERTHORNE_LATS,
+             39.624, 39.619, 39.616, 39.613, 39.611,
+             39.608, 39.605, 39.601, 39.596, 39.590,
+             39.585, 39.582),
+    lons = c(.I70_TO_SILVERTHORNE_LONS,
+             -106.063, -106.051, -106.040, -106.027, -106.013,
+             -105.999, -105.985, -105.973, -105.963, -105.955,
+             -105.948, -105.944),
     duration_mins = 89, distance_miles = 76
   ),
+  # Denver → I-70 W → past Frisco → Exit 195 → Copper Mountain
   "Copper Mountain" = .make_route(
-    lats = c(39.739, 39.748, 39.743, 39.681, 39.530, 39.502),
-    lons = c(-104.990, -105.223, -105.514, -105.905, -106.127, -106.156),
+    lats = c(.I70_TO_FRISCO_LATS,
+             39.566, 39.558, 39.548, 39.535, 39.520, 39.509, 39.502),
+    lons = c(.I70_TO_FRISCO_LONS,
+             -106.104, -106.112, -106.124, -106.135, -106.143, -106.150, -106.156),
     duration_mins = 95, distance_miles = 81
   ),
+  # Denver → I-70 W → Copper → Vail Pass → Vail
   "Vail Ski Resort" = .make_route(
-    lats = c(39.739, 39.748, 39.743, 39.681, 39.530, 39.571, 39.606),
-    lons = c(-104.990, -105.223, -105.514, -105.905, -106.127, -106.217, -106.355),
+    lats = c(.I70_TO_FRISCO_LATS,
+             39.566, 39.558, 39.548, 39.535, 39.520, 39.509, 39.502,
+             39.510, 39.519, 39.528, 39.538, 39.547, 39.558,
+             39.566, 39.574, 39.581, 39.590, 39.597, 39.606),
+    lons = c(.I70_TO_FRISCO_LONS,
+             -106.104, -106.112, -106.124, -106.135, -106.143, -106.150, -106.156,
+             -106.170, -106.187, -106.204, -106.221, -106.239, -106.256,
+             -106.274, -106.293, -106.313, -106.327, -106.341, -106.355),
     duration_mins = 115, distance_miles = 97
   ),
+  # Denver → I-70 W to US-40 exit (Empire) → US-40 N → Rabbit Ears Pass → Steamboat
   "Steamboat Ski Resort" = .make_route(
-    lats = c(39.739, 39.745, 39.757, 39.804, 40.093, 40.154, 40.485),
-    lons = c(-104.990, -105.385, -105.683, -105.775, -105.938, -106.913, -106.831),
+    lats = c(39.739, 39.727, 39.716, 39.703, 39.692, 39.680,
+             39.671, 39.665, 39.660, 39.657,
+             39.662, 39.671, 39.686, 39.703, 39.722,
+             39.751, 39.781, 39.814, 39.845, 39.872,
+             39.900, 39.922, 39.942, 39.956,
+             39.972, 39.998, 40.018, 40.038, 40.052,
+             40.063, 40.075, 40.093, 40.112, 40.135,
+             40.158, 40.184, 40.228, 40.282, 40.347,
+             40.398, 40.435, 40.454, 40.470, 40.485),
+    lons = c(-104.990, -105.045, -105.102, -105.154, -105.192, -105.232,
+             -105.268, -105.302, -105.332, -105.360,
+             -105.390, -105.418, -105.448, -105.475, -105.502,
+             -105.530, -105.565, -105.608, -105.645, -105.678,
+             -105.706, -105.724, -105.741, -105.756,
+             -105.773, -105.810, -105.843, -105.886, -105.926,
+             -105.972, -106.027, -106.095, -106.170, -106.280,
+             -106.412, -106.528, -106.650, -106.762, -106.816,
+             -106.825, -106.820, -106.812, -106.793, -106.770),
     duration_mins = 162, distance_miles = 157
   )
 )

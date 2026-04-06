@@ -2,7 +2,7 @@
 
 **Authors:** Hira Farooq & Maren Roether
 **Course:** GLHLTH 562 — Data Science for Global Health
-**Last updated:** 2026-04-06
+**Last updated:** 2026-04-07
 
 **Live app:** https://marenroe.shinyapps.io/ski_smart/
 
@@ -48,19 +48,18 @@ Planning a ski trip currently requires manually checking multiple sources: resor
 
 ## Architecture Overview
 
-The app is built around a five-stage data pipeline:
+The app is built around a four-stage data pipeline:
 
 ```
 User Inputs
     → Stage 1: Resort Scoring
     → Stage 2: Route Risk Scoring
     → Stage 3: Feasibility + Fallback
-    → Stage 4: Departure Optimizer
-    → Stage 5: LLM Synthesis
+    → Stage 4: LLM Synthesis
     → Output Dashboard
 ```
 
-Layer 1 (MVP) covers Stages 1–3 and the dashboard. Layer 2 adds the full route risk map and departure optimizer once Layer 1 is stable.
+Layer 1 (MVP) covers Stages 1–3 and the dashboard. Layer 2 adds the full route risk map and LLM synthesis once Layer 1 is stable.
 
 ---
 
@@ -70,10 +69,10 @@ Layer 1 (MVP) covers Stages 1–3 and the dashboard. Layer 2 adds the full route
 skismart/
 ├── README.md                  # this file
 ├── app.R                      # Shiny UI + server — full Stage 1 + Stage 2 pipeline
-├── app_demo.R                 # UI preview with dummy data (for testing without live APIs)
+├── app_demo.R                 # [development only — superseded by built-in Demo Mode in app.R]
 ├── launch_app.R               # helper: launches app with explicit path (Windows fix)
-├── .env                       # API keys — gitignored, never committed
-├── .env.example               # safe-to-commit key template
+├── .env                       # [development only — superseded by .Renviron for deployment]
+├── .env.example               # [development only — superseded by .Renviron for deployment]
 ├── data/
 │   ├── resorts.csv            # static resort database (33 Colorado resorts)
 │   └── cities.csv             # ~70 starting cities with lat/lon (CO, WY, UT, NM + surrounding)
@@ -83,7 +82,7 @@ skismart/
 │   ├── api_openmeteo.R        # Stage 1: Open-Meteo weather fetch + unit conversion (Hira)
 │   ├── weather_score.R        # Stage 1: weather quality scoring functions (Hira)
 │   ├── terrain_open_score.R   # Stage 1: terrain open score — absolute trail counts (Hira)
-│   ├── load_env.R             # loads API keys from .env into Sys.setenv()
+│   ├── load_env.R             # [development only — loads API keys from .env; superseded by .Renviron]
 │   ├── api_geocode.R          # Stage 2: Nominatim geocoder (Hira)
 │   ├── api_routing.R          # Stage 2: GraphHopper route fetch (Hira)
 │   ├── api_cdot.R             # Stage 2: CDOT /roadConditions fetch (Hira)
@@ -127,7 +126,7 @@ R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date
 | Starting city | Dropdown | ~70 cities across CO, WY, UT, NM, and surrounding states — no geocoding needed |
 | Ski date | Date (YYYY-MM-DD) | Up to 10 days ahead; used as scoring anchor |
 | Skier ability | One of: beginner, intermediate, advanced, expert | Single input per session |
-| Max drive time | Hours (1–12, step 0.5) | Hard exclude: resorts exceeding this limit are removed from ranking entirely |
+| Max drive time | Hours (1–12, step 0.5) | Hard exclusion: resorts exceeding this limit are removed from ranking entirely |
 
 ---
 
@@ -154,18 +153,18 @@ R/Shiny. Tidyverse (dplyr etc.) approved throughout. API calls via `httr2`. Date
 
 ### 1d. User Input
 - **Source:** Shiny UI reactive inputs — `app.R`
-- **Fields:** ski date (up to 10 days ahead), max drive time (hours), ability level, terrain preference, season pass type, risk tolerance
-- **How it works:** All inputs are collected in a named list and passed to `score_resorts(user_inputs)` when the user clicks Find Resorts
+- **Fields:** ski date (up to 10 days ahead), max drive time (hours), ability level
+- **How it works:** All inputs are collected as reactive values and passed to `score_all_resorts()` when the user clicks Find Resorts
 
 ---
 
 ## 2. Data Ingestion
 
 ### 2a. Static Resort Database
-Read at script load time using `readr::read_csv()` in `score_resorts.R`:
+Read at script load time using `read.csv()` in `composite_score.R`:
 
 ```r
-resorts_raw <- read_csv("resorts - clean.csv", col_types = cols(...))
+resorts_raw <- read.csv("data/resorts.csv")
 ```
 
 ### 2b. CAIC Avalanche API — How We Found the Endpoint
@@ -426,49 +425,7 @@ Fetches and unit-converts live weather data for a resort coordinate. No API key 
 
 ---
 
-### 3e. Terrain Match Score (`score_resorts.R`)
-
-Measures how well a resort's trail difficulty distribution matches what is appropriate for the user's ability level.
-
-**Target distributions:**
-
-| Ability | Green | Blue | Black | Dbl Black |
-|---|---|---|---|---|
-| Beginner | 50% | 40% | 10% | 0% |
-| Intermediate | 10% | 50% | 30% | 10% |
-| Advanced | 0% | 20% | 50% | 30% |
-| Expert | 0% | 10% | 30% | 60% |
-
-**Formula:**
-```
-deviation     = mean(|actual_pct - target_pct|)  across four difficulty bands
-terrain_score = max(0, 100 - deviation × 200)
-```
-
-A perfect match scores 100. A mean deviation of 0.5 (complete mismatch) scores 0.
-
-**Example:** Breckenridge (14% green, 31% blue, 19% black, 36% double black) for an expert user:
-```
-deviation = mean(0.14, 0.21, 0.11, 0.24) = 0.175
-score     = 100 - 0.175 × 200 = 65
-```
-
----
-
-### 3f. Conditions Risk Score (`score_resorts.R`)
-
-Converts `danger_numeric` (1–5) to a 0–100 risk penalty, adjusted by user risk tolerance:
-
-```
-base_risk     = (danger_numeric - 1) / 4 × 100
-adjusted_risk = base_risk × (1 - risk_tolerance × 0.4)
-```
-
-A user with high risk tolerance (1.0) reduces the penalty by 40%.
-
----
-
-### 3g. Composite Score (`R/composite_score.R`)
+### 3e. Composite Score (`R/composite_score.R`)
 
 Master scoring function integrating all Stage 1 components. Uses a **two-pass structure** because terrain score normalization requires the full distribution across all resorts before any composite can be computed.
 
@@ -564,34 +521,34 @@ KEY_ACTION: single most important driver action, or "None"
 
 ### Stage 3 — Feasibility Rules
 
-**Hard blocks** (resort rejected):
-- Road closed with no alternate
-- Avalanche HIGH/EXTREME on route
-- Resort closed for the season
-- Drive time exceeds user maximum
+Three hard exclusion rules are applied before a winner is selected:
 
-**Soft flags** (warning shown):
-- Chains required but user has none
-- Storm forecast during drive window
-- Snow base below 30"
+1. **Resort closed for the season** — filtered out before any API calls using `season_open`/`season_close` dates in `resorts.csv`
+2. **Drive time exceeds user maximum** — hard-excluded after GraphHopper routing; if all resorts exceed the limit, the app shows a "no resorts within your drive time" message
+3. **Avalanche Extreme (level 5)** — composite score is set to `NA`, pushing the resort to the bottom of rankings and out of consideration
 
-If the top resort is blocked, the app falls back to #2, then #3, and explains each rejection.
+No soft flags or cascading fallback logic — the remaining resorts within limit are simply ranked by conditions score.
 
 ---
 
 ## 4. Output
 
-### 4a. Pipeline Output (`score_resorts.R`)
+### 4a. Pipeline Output (`R/composite_score.R`)
 
-`score_resorts()` returns a named list:
+`score_all_resorts()` returns a plain dataframe sorted by `composite_score` descending (NAs last), with one row per open resort:
 
-| Element | Contents |
-|---|---|
-| `$top` | Top N ranked resorts (default 3) with all scores |
-| `$blocked` | Resorts removed due to hard blocks, with reasons |
-| `$all` | Full scored dataframe for all 33 resorts |
-| `$inputs` | User inputs used for this run |
-| `$timestamp` | When the pipeline was run |
+| Column | Type | Description |
+|---|---|---|
+| `resort_id` | int | matches resort CSV |
+| `resort_name` | chr | |
+| `composite_score` | dbl | 0–1; NA if avalanche danger is Extreme |
+| `weather_score` | dbl | 0–1 |
+| `terrain_score` | dbl | 0–1, normalized across all resorts |
+| `avalanche_danger` | chr | e.g. "Moderate"; NA if not applicable |
+| `avalanche_applied` | lgl | TRUE if multiplier was applied |
+| `lift_pct` | dbl | estimated % of lifts operating |
+| `warnings` | chr | semicolon-separated warning strings; NA if none |
+| `error` | chr | weather fetch error message; NA if successful |
 
 ### 4b. Shiny App Output (`app.R`)
 
@@ -613,13 +570,9 @@ All outputs update only when the user clicks **Find Resorts** — not on every i
 
 **Graceful degradation:** each API stage is wrapped in `tryCatch`. If geocoding fails, Stage 1 results still display. If routing fails, the map shows resort pins without a route. If Groq is unavailable or the key is missing, the rest of the app still functions.
 
-### 4c. `app_demo.R` — UI Preview Without Live Scoring
+### 4c. `app_demo.R` — UI Preview Without Live Scoring *(development only)*
 
-A standalone demo app for testing the UI and map without a working `score_resorts()` pipeline. Uses:
-- Hardcoded top-3 resorts (Breckenridge, Keystone, Loveland) with dummy scores
-- Real geocoding and GraphHopper routing (uses `.env` keys)
-- Dummy CDOT conditions at realistic I-70 trouble spots (Floyd Hill, Eisenhower Tunnel, Silverthorne) for route coloring
-- Dummy LLM output (moderate risk) for the route risk panel
+A standalone prototype used during development for testing the UI and map without a working pipeline. Superseded by the built-in **Demo Mode** toggle in `app.R` (see Demo Mode section above). Kept in the repository for reference but no longer used.
 
 ---
 
@@ -657,7 +610,7 @@ print(results[, c("resort_name", "composite_score", "weather_score",
 
 ### API Keys
 
-Copy `.env.example` to `.env` and fill in your keys. The `.env` file is gitignored and must never be committed.
+Create a `.Renviron` file in the project root and add your keys. This file is gitignored and must never be committed.
 
 ```
 CDOT_API_KEY=your_cdot_key         # register at cotrip.org
@@ -665,7 +618,7 @@ GRAPHHOPPER_API_KEY=your_key       # console.graphhopper.com — free, 500 req/d
 GROQ_API_KEY=your_key              # console.groq.com — free, no credit card required
 ```
 
-Stage 1 (resort scoring) requires no API keys — CAIC and Open-Meteo are free and open.
+Restart R after editing `.Renviron` so the keys are loaded into the session. Stage 1 (resort scoring) requires no API keys — CAIC and Open-Meteo are free and open.
 
 ### Cache Behaviour
 
@@ -681,12 +634,7 @@ results <- score_all_resorts(resorts, ski_date = Sys.Date() + 1, ability = "inte
 
 ## Pending Items
 
-| Item | Status | Notes |
-|---|---|---|
-| Test Groq LLM call end-to-end | Pending | Needs `GROQ_API_KEY` in `.env` from console.groq.com |
-| Test full Stage 1 + Stage 2 integration in app | Pending | Awaiting live test with all keys |
-| Departure optimizer | Not started | Stage 4 |
-| LLM trip briefing | Not started | Stage 5 final output |
+No pending items — the project is complete and deployed at **https://marenroe.shinyapps.io/ski_smart/**
 
 ---
 

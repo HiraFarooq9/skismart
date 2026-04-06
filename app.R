@@ -1040,9 +1040,9 @@ server <- function(input, output, session) {
 
     route <- focus_route()
 
-    # Start pin
+    # Start pin — use result$start_lat/lon so demo mode shows Denver, not the UI city
     m <- m |> addCircleMarkers(
-      lng = city$longitude[1], lat = city$latitude[1],
+      lng = result$start_lon, lat = result$start_lat,
       radius = 9, color = "#1B3A5C", fillColor = "#1B3A5C",
       fillOpacity = 1, weight = 0,
       popup = paste0("<b>Start:</b> ", result$start_label),
@@ -1119,8 +1119,8 @@ server <- function(input, output, session) {
         lat2 = as.numeric(route$bbox["max_lat"]) + pad
       )
     } else if (!is.na(r$longitude) && !is.na(r$latitude)) {
-      lngs <- c(city$longitude[1], r$longitude)
-      lats <- c(city$latitude[1],  r$latitude)
+      lngs <- c(result$start_lon, r$longitude)
+      lats <- c(result$start_lat, r$latitude)
       m <- m |> fitBounds(
         lng1 = min(lngs) - pad * 3,
         lat1 = min(lats) - pad * 3,
@@ -1258,7 +1258,7 @@ server <- function(input, output, session) {
           "Drive Time"
         ),
         tags$th(
-          `data-tippy-content` = "Composite score combines snow quality (50%) and estimated open terrain matched to your ability (50%). Adjusted down for avalanche danger when data is available.",
+          `data-tippy-content` = "Composite score (0–1): combines snow quality (50%) and estimated open terrain matched to your ability (50%). Adjusted down for avalanche danger when data is available.",
           "Score"
         ),
         tags$th(
@@ -1454,13 +1454,14 @@ server <- function(input, output, session) {
 
     key <- paste(r$resort_name, as.character(input$trip_date),
                  input$ability_level, sep = "|")
-    if (!is.null(isolate(score_interp_cache[[key]]))) return()   # already cached
 
-    # In demo mode: skip Groq and use pre-written interpretations
+    # Demo mode: always overwrite cache so stale live results don't block demo data
     if (isTRUE(input$demo_mode)) {
       score_interp_cache[[key]] <- make_demo_score_interp(r$resort_name)
       return()
     }
+
+    if (!is.null(isolate(score_interp_cache[[key]]))) return()   # already cached (live mode only)
 
     req(isTruthy(GROQ_KEY))
 
