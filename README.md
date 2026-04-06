@@ -2,7 +2,7 @@
 
 **Authors:** Hira Farooq & Maren Roether
 **Course:** GLHLTH 562 — Data Science for Global Health
-**Last updated:** 2026-04-03 (Session 6)
+**Last updated:** 2026-04-05 (Session 8)
 
 SkiSmart is a Shiny web application that recommends Colorado ski resorts to recreational skiers based on their preferences, current snow and avalanche conditions, and route safety.
 
@@ -755,6 +755,18 @@ results <- score_all_resorts(resorts, ski_date = Sys.Date() + 1, ability = "inte
 
 ### Session 6 — Bug Fix
 - Fixed `[object Object]` rendering error in the comparison table: `format_drive_time()` is a scalar function and failed silently when passed a full vector inside `dplyr::case_when()`; replaced with `sapply(duration_mins, format_drive_time)` so it is applied element-wise
+
+### Session 7 — Road Conditions for All Resorts + UI Fixes (Hira)
+- **Road conditions for all 5 resorts:** CDOT + Groq route analysis now pre-computed for all top 5 resorts in the pipeline, not just the winner; clicking any row in the comparison table shows that resort's road conditions and route map
+- **Map auto-zoom:** Leaflet map now calls `fitBounds` on the route bounding box so the full route is always visible; fixed a bug where named numeric vectors were serialized as JSON objects instead of scalars — wrapped all bbox values with `as.numeric()`
+- **Drive-time exclusion fix:** Comparison table was still displaying resorts that exceeded the user's max drive time (e.g. Wolf Creek); fixed by filtering the table to `reranked$all_resorts` and ensuring `all_resorts` is populated in both return branches of `rerank_with_drive_time()`
+- **Terrain column:** Changed from misleading "~X% open for [ability] skiers" label to a plain numeric score (e.g. `0.74`) consistent with the weather score display, since the value is a normalized relative score, not a literal percentage
+- **Data-specific LLM interpretations:** Rewrote `call_groq_score_interpretation()` to pass actual observed values — base depth, 72h snowfall, avg temp, wind speed, estimated % of ability-preferred terrain open, and terrain rank context — so score bullets name specific factors instead of giving generic text
+- **Grey map / broken resort clicking fix:** Groq API call was inside `renderUI`, blocking Shiny's single R thread and preventing `renderLeaflet` from executing; moved to a `priority = -1` observer backed by a `reactiveValues` cache so the map and UI render immediately and score bullets populate once Groq returns
+
+### Session 8 — Terrain Score Zero Gate (Hira)
+- **Bug fix — terrain score inflation when conditions are poor:** `normalize_terrain_scores()` used min-max normalization, causing the best resort to always receive a score of 1.00 even when all resorts had near-zero terrain accessibility (e.g. late-season, thin base). This produced absurd LLM output such as "0% of preferred trails accessible, terrain score: 1.00"
+- **Fix:** Added `pct_preferred_open` (ability-weighted average fraction of preferred trail tiers estimated open) to the return value of `compute_terrain_open_score()` in `R/terrain_open_score.R`; stored it in Pass 1 of `composite_score.R`; in Pass 2, terrain score is forced to 0 if `pct_preferred_open == 0`, regardless of relative ranking. Otherwise the existing min-max normalization is preserved so absolute trail count comparisons across resorts remain valid
 
 ---
 

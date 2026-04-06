@@ -285,16 +285,20 @@ compute_terrain_open_score <- function(depth_in,
   # Step 7: raw score (not yet normalised to 0–1)
   raw_score <- weighted_open_count * lift_result$pct
 
+  # Ability-weighted average % of preferred terrain tiers open (0–1)
+  pct_preferred_open <- sum(terrain_pcts[expected] * w)
+
   warnings <- lift_result$warning
   warnings <- warnings[!is.null(warnings) & !is.na(warnings) & nchar(warnings) > 0]
 
   list(
-    raw_score    = round(raw_score, 2),
-    open_trails  = round(open_trails, 1),
-    lift_pct     = lift_result$pct,
-    terrain_pcts = round(terrain_pcts, 3),
-    weights      = w,
-    warnings     = if (length(warnings) > 0) warnings else NULL
+    raw_score          = round(raw_score, 2),
+    open_trails        = round(open_trails, 1),
+    lift_pct           = lift_result$pct,
+    terrain_pcts       = round(terrain_pcts, 3),
+    weights            = w,
+    pct_preferred_open = round(pct_preferred_open, 3),
+    warnings           = if (length(warnings) > 0) warnings else NULL
   )
 }
 

@@ -190,14 +190,15 @@ score_all_resorts <- function(resorts, ski_date, ability) {
     wx        <- all_weather[[resort_id]]
 
     row <- list(
-      resort_id        = resort$resort_id,
-      resort_name      = resort$resort_name,
-      weather_score    = NA_real_,
-      raw_terrain      = NA_real_,
-      lift_pct         = NA_real_,
-      weather_warnings = NULL,
-      terrain_warnings = NULL,
-      error            = NA_character_
+      resort_id          = resort$resort_id,
+      resort_name        = resort$resort_name,
+      weather_score      = NA_real_,
+      raw_terrain        = NA_real_,
+      lift_pct           = NA_real_,
+      pct_preferred_open = NA_real_,
+      weather_warnings   = NULL,
+      terrain_warnings   = NULL,
+      error              = NA_character_
     )
 
     if (!is.null(wx$error)) {
@@ -236,9 +237,10 @@ score_all_resorts <- function(resorts, ski_date, ability) {
       trails_total     = resort$trails_total,
       trail_mix        = trail_mix
     )
-    row$raw_terrain      <- terrain_result$raw_score
-    row$lift_pct         <- terrain_result$lift_pct
-    row$terrain_warnings <- terrain_result$warnings
+    row$raw_terrain        <- terrain_result$raw_score
+    row$lift_pct           <- terrain_result$lift_pct
+    row$pct_preferred_open <- terrain_result$pct_preferred_open
+    row$terrain_warnings   <- terrain_result$warnings
 
     intermediate[[i]] <- row
   }
@@ -268,12 +270,18 @@ score_all_resorts <- function(resorts, ski_date, ability) {
     terrain_score_norm <- normalized_terrain[as.character(r$resort_id)]
     if (length(terrain_score_norm) == 0) terrain_score_norm <- NA_real_
 
+    # Gate: if 0% of ability-preferred terrain is accessible, score is 0
+    terrain_score_final <- unname(terrain_score_norm)
+    if (!is.na(r$pct_preferred_open) && r$pct_preferred_open == 0) {
+      terrain_score_final <- 0
+    }
+
     row <- list(
       resort_id         = r$resort_id,
       resort_name       = r$resort_name,
       composite_score   = NA_real_,
       weather_score     = r$weather_score,
-      terrain_score     = unname(terrain_score_norm),
+      terrain_score     = terrain_score_final,
       avalanche_danger  = NA_character_,
       avalanche_applied = FALSE,
       lift_pct          = r$lift_pct,
@@ -287,7 +295,7 @@ score_all_resorts <- function(resorts, ski_date, ability) {
       next
     }
 
-    base_score   <- (r$weather_score * 0.5) + (unname(terrain_score_norm) * 0.5)
+    base_score   <- (r$weather_score * 0.5) + (terrain_score_final * 0.5)
     all_warnings <- c(r$weather_warnings, r$terrain_warnings)
 
     # Avalanche multiplier (today/tomorrow only)
