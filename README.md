@@ -2,9 +2,41 @@
 
 **Authors:** Hira Farooq & Maren Roether
 **Course:** GLHLTH 562 — Data Science for Global Health
-**Last updated:** 2026-04-05 (Session 8)
+**Last updated:** 2026-04-06
+
+**Live app:** https://marenroe.shinyapps.io/ski_smart/
 
 SkiSmart is a Shiny web application that recommends Colorado ski resorts to recreational skiers based on their preferences, current snow and avalanche conditions, and route safety.
+
+---
+
+## Deployment
+
+The app is hosted on shinyapps.io at **https://marenroe.shinyapps.io/ski_smart/**
+
+To redeploy after making local changes, open the project in RStudio (via `skismart.Rproj`) and run:
+
+```r
+rsconnect::deployApp(appDir = getwd(), appName = "ski_smart")
+```
+
+API keys are bundled at deploy time via a `.Renviron` file in the project root (gitignored). The free shinyapps.io tier does not expose environment variables through the dashboard UI.
+
+---
+
+## Demo Mode
+
+A **Demo Mode** toggle is available in the sidebar for presentations and demonstrations. When enabled, the app bypasses all live API calls and displays static peak-season (January) data for five Front Range / Summit County resorts departing from Denver:
+
+| Resort | Score | Drive |
+|---|---|---|
+| Breckenridge Ski Resort | 0.84 | 1h 32m · 79 mi |
+| Keystone Resort | 0.78 | 1h 28m · 76 mi |
+| Copper Mountain | 0.74 | 1h 35m · 81 mi |
+| Vail Ski Resort | 0.69 | 1h 55m · 97 mi |
+| Steamboat Ski Resort | 0.63 | 2h 42m · 157 mi |
+
+Demo mode includes simulated route polylines with color-coded road conditions (Vail Pass and Rabbit Ears Pass shown as moderate/orange), pre-written LLM score interpretations, weather sparkline charts, and avalanche ratings — all without consuming API credits. Uncheck Demo Mode to return to live data.
 
 ---
 
@@ -57,7 +89,8 @@ skismart/
 │   ├── api_cdot.R             # Stage 2: CDOT /roadConditions fetch (Hira)
 │   ├── route_conditions.R     # Stage 2: spatial filter + per-row risk + LLM prompt (Hira)
 │   ├── llm_route_summary.R    # Stage 2: Groq LLM call + response parser (Hira)
-│   └── stage2_rerank.R        # Stage 2: drive-time hard exclusion + resort reranking (Hira)
+│   ├── stage2_rerank.R        # Stage 2: drive-time hard exclusion + resort reranking (Hira)
+│   └── demo_data.R            # Demo mode: static peak-season mock data for presentations
 └── tests/
     ├── test_scoring.R         # Stage 1 unit + scenario tests
     └── test_stage2.R          # Stage 2 section-by-section test script
@@ -767,6 +800,26 @@ results <- score_all_resorts(resorts, ski_date = Sys.Date() + 1, ability = "inte
 ### Session 8 — Terrain Score Zero Gate (Hira)
 - **Bug fix — terrain score inflation when conditions are poor:** `normalize_terrain_scores()` used min-max normalization, causing the best resort to always receive a score of 1.00 even when all resorts had near-zero terrain accessibility (e.g. late-season, thin base). This produced absurd LLM output such as "0% of preferred trails accessible, terrain score: 1.00"
 - **Fix:** Added `pct_preferred_open` (ability-weighted average fraction of preferred trail tiers estimated open) to the return value of `compute_terrain_open_score()` in `R/terrain_open_score.R`; stored it in Pass 1 of `composite_score.R`; in Pass 2, terrain score is forced to 0 if `pct_preferred_open == 0`, regardless of relative ranking. Otherwise the existing min-max normalization is preserved so absolute trail count comparisons across resorts remain valid
+
+### Session 9 — Deployment + Demo Mode + UI Polish (Maren)
+
+**Deployment**
+- App deployed to shinyapps.io at https://marenroe.shinyapps.io/ski_smart/
+- API keys passed via `.Renviron` at deploy time (free tier workaround — UI environment variable settings are not available on the free plan)
+- Redeploy command: `rsconnect::deployApp(appDir = getwd(), appName = "ski_smart")`
+
+**Demo Mode**
+- Added `R/demo_data.R` with static peak-season (January) mock data for five Denver-area resorts
+- Demo Mode checkbox in sidebar bypasses all live API calls instantly — no Find Resorts click needed
+- Includes pre-written LLM score interpretations, weather sparkline data, realistic drive times, route polylines with simulated CDOT road conditions (Vail Pass and Rabbit Ears Pass show as moderate/orange), and avalanche ratings
+- Score interp observer skips Groq API in demo mode and populates cache from pre-written text
+
+**UI improvements**
+- **Equal-height bottom cards:** Avalanche Forecast and Resort Snapshot cards now always align at the bottom using flexbox on the bottom row
+- **Website links:** Comparison table has a new Website column with ↗ links to each resort's official website (from `resort_url` in `resorts.csv`), centered and width-constrained
+- **Map markers:** Start pin changed to a solid navy filled dot; resort pin is a red awesome marker with a white dot (CSS `color: white !important` override applied to `.awesome-marker i`)
+- **Route color fix:** `risk_color()` default (clear roads) changed from grey `#888888` to blue `#2E6DA4` to match the legend; legend now also shown when CDOT data is unavailable
+- **DT selection decoupled:** Removed reactive `selected = selected_idx()` from `renderDataTable` options; a separate `DT::dataTableProxy` observer now updates the highlighted row without causing a full table re-render (fixes weather chart not updating on resort switch in demo mode)
 
 ---
 

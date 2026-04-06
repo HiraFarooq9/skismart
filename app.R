@@ -29,6 +29,7 @@ source("R/api_cdot.R")
 source("R/route_conditions.R")
 source("R/llm_route_summary.R")
 source("R/stage2_rerank.R")
+source("R/demo_data.R")
 
 resorts <- read.csv("data/resorts.csv", stringsAsFactors = FALSE)
 cities  <- read.csv("data/cities.csv",  stringsAsFactors = FALSE)
@@ -47,7 +48,7 @@ risk_color <- function(risk) {
     risk == "do_not_travel" ~ "#7B2D2D",
     risk == "high"          ~ "#dc3545",
     risk == "moderate"      ~ "#fd7e14",
-    TRUE                    ~ "#888888"
+    TRUE                    ~ "#2E6DA4"
   )
 }
 
@@ -361,6 +362,9 @@ skismart_css <- "
     text-align: center;
   }
 
+  /* ── Map marker icon color override ──────────────────────────────────── */
+  .awesome-marker i { color: white !important; }
+
   /* ── Snapshot icons ───────────────────────────────────────────────────── */
   .sk-snap-icon {
     display: block;
@@ -429,12 +433,19 @@ skismart_css <- "
   }
   .sk-avy-note a { color: var(--blue); text-decoration: underline; }
 
+  /* ── Equal-height bottom row ──────────────────────────────────────────── */
+  #bottom_row .row { display: flex; align-items: stretch; flex-wrap: wrap; }
+  #bottom_row .col-sm-6 { display: flex; flex-direction: column; }
+  #bottom_row .result-card { flex: 1; display: flex; flex-direction: column; }
+
   /* ── Snapshot card ────────────────────────────────────────────────────── */
   .sk-snapshot-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 16px 12px;
     margin-top: 10px;
+    flex: 1;
+    align-content: space-around;
   }
   .sk-snap-cell { text-align: center; }
   .sk-snap-value { font-size: 26px; font-weight: 700; color: var(--navy); line-height: 1; }
@@ -617,6 +628,19 @@ ui <- fluidPage(
           "Roads: Colorado DOT 511.", tags$br(),
           "33 Colorado resorts · Season dates applied."
         )
+      ),
+
+      hr(),
+      checkboxInput(
+        inputId = "demo_mode",
+        label   = tags$span(
+          style = "font-size:12px; color:#E65100; font-weight:600;",
+          "Demo Mode",
+          tags$br(),
+          tags$span(style = "color:#888; font-weight:normal;",
+                    "Simulates peak January conditions")
+        ),
+        value = FALSE
       )
     ),
 
@@ -666,13 +690,23 @@ server <- function(input, output, session) {
     selected_idx(idx[1])
   }, ignoreNULL = TRUE)
 
+  # Keep table highlight in sync with selected_idx without re-rendering the table
+  observe({
+    req(!is.null(pipeline_result()$stage1_df))
+    DT::dataTableProxy("resorts_table") |> DT::selectRows(selected_idx())
+  })
+
   # ── City coordinates ─────────────────────────────────────────────────────────
   user_city_data <- reactive({
     cities |> dplyr::filter(city_label == input$user_city)
   })
 
   # ── Stage 1 + 2 pipeline ─────────────────────────────────────────────────────
-  pipeline_result <- eventReactive(input$find_resorts, {
+  pipeline_stored <- reactiveVal(NULL)
+
+  observeEvent(input$demo_mode, { selected_idx(1) })
+
+  observeEvent(input$find_resorts, {
 
     # Reset focus to top resort for new run
     selected_idx(1)
@@ -787,7 +821,7 @@ server <- function(input, output, session) {
 
     removeNotification("loading_llm")
 
-    list(
+    pipeline_stored(list(
       stage1_df          = stage1_df,
       reranked           = reranked,
       winner             = winner,
@@ -795,7 +829,11 @@ server <- function(input, output, session) {
       start_lat          = start_lat,
       start_lon          = start_lon,
       start_label        = start_label
-    )
+    ))
+  })
+
+  pipeline_result <- reactive({
+    if (isTRUE(input$demo_mode)) make_demo_pipeline_result() else pipeline_stored()
   })
 
   # ── Top resorts with resort metadata joined ──────────────────────────────────
@@ -847,6 +885,7 @@ server <- function(input, output, session) {
   resort_display <- reactive({
     r <- selected_resort()
     if (is.null(r)) return(NULL)
+    if (isTRUE(input$demo_mode)) return(make_demo_display(r$resort_name))
     fetch_resort_display_data(r$latitude, r$longitude, input$trip_date)
   })
 
@@ -1004,8 +1043,8 @@ server <- function(input, output, session) {
     # Start pin
     m <- m |> addCircleMarkers(
       lng = city$longitude[1], lat = city$latitude[1],
-      radius = 9, color = "#1B3A5C", fillColor = "white",
-      fillOpacity = 1, weight = 3,
+      radius = 9, color = "#1B3A5C", fillColor = "#1B3A5C",
+      fillOpacity = 1, weight = 0,
       popup = paste0("<b>Start:</b> ", result$start_label),
       label = result$start_label
     )
@@ -1044,6 +1083,11 @@ server <- function(input, output, session) {
         m <- m |> addPolylines(
           lng = wp$lon, lat = wp$lat,
           color = "#2E6DA4", weight = 4, opacity = 0.8
+        ) |> addLegend(
+          position = "bottomright",
+          colors   = c("#2E6DA4", "#fd7e14", "#dc3545", "#7B2D2D"),
+          labels   = c("Clear", "Moderate risk", "High risk", "Do not travel"),
+          opacity  = 0.85, title = "Road conditions"
         )
       }
     }
@@ -1053,7 +1097,7 @@ server <- function(input, output, session) {
       m <- m |> addAwesomeMarkers(
         lng = r$longitude, lat = r$latitude,
         icon = awesomeIcons(
-          icon        = "map-marker",
+          icon        = "circle",
           iconColor   = "white",
           library     = "fa",
           markerColor = "red"
@@ -1173,8 +1217,11 @@ server <- function(input, output, session) {
       data.frame(resort_name = character(0), duration_mins = numeric(0))
     }
 
+    url_lookup <- resorts[, c("resort_name", "resort_url")]
+
     display <- df |>
       dplyr::left_join(drive_times, by = "resort_name") |>
+      dplyr::left_join(url_lookup,  by = "resort_name") |>
       dplyr::mutate(
         `#`            = seq_len(dplyr::n()),
         Resort         = resort_name,
@@ -1191,9 +1238,14 @@ server <- function(input, output, session) {
         Lifts          = ifelse(is.na(lift_pct), "—",
                                 paste0(round(lift_pct * 100), "%")),
         Avalanche      = mapply(avy_html, avalanche_applied, avalanche_danger,
-                                SIMPLIFY = TRUE)
+                                SIMPLIFY = TRUE),
+        Website        = ifelse(
+          !is.na(resort_url) & nchar(resort_url) > 0,
+          sprintf('<a href="%s" target="_blank" style="color:#2E6DA4;font-size:15px;text-decoration:none;" title="Visit resort website">&#8599;</a>', resort_url),
+          "—"
+        )
       ) |>
-      dplyr::select(`#`, Resort, `Drive Time`, Score, Weather, Terrain, Lifts, Avalanche)
+      dplyr::select(`#`, Resort, `Drive Time`, Score, Weather, Terrain, Lifts, Avalanche, Website)
 
     # Custom header container with tippy tooltips
     header <- htmltools::withTags(table(
@@ -1224,6 +1276,10 @@ server <- function(input, output, session) {
         tags$th(
           `data-tippy-content` = "CAIC avalanche danger rating (Low → Extreme). Only available for today and tomorrow. Higher danger is automatically factored down into the composite score.",
           "Avalanche"
+        ),
+        tags$th(
+          `data-tippy-content` = "Link to the resort's official website.",
+          "Website"
         )
       ))
     ))
@@ -1233,11 +1289,12 @@ server <- function(input, output, session) {
       container  = header,
       escape     = FALSE,
       rownames   = FALSE,
-      selection  = list(mode = "single", target = "row", selected = selected_idx()),
+      selection  = list(mode = "single", target = "row"),
       options    = list(
-        dom        = "t",
-        ordering   = FALSE,
-        pageLength = 50,
+        dom         = "t",
+        ordering    = FALSE,
+        pageLength  = 50,
+        columnDefs  = list(list(className = "dt-center", width = "55px", targets = 8)),
         initComplete = DT::JS(
           "function(settings, json) {
              if (typeof tippy !== 'undefined') {
@@ -1391,7 +1448,6 @@ server <- function(input, output, session) {
   score_interp_cache <- reactiveValues()
 
   observe({
-    req(isTruthy(GROQ_KEY))
     r      <- selected_resort()
     result <- pipeline_result()
     req(!is.null(r), !is.null(result$stage1_df))
@@ -1399,6 +1455,14 @@ server <- function(input, output, session) {
     key <- paste(r$resort_name, as.character(input$trip_date),
                  input$ability_level, sep = "|")
     if (!is.null(isolate(score_interp_cache[[key]]))) return()   # already cached
+
+    # In demo mode: skip Groq and use pre-written interpretations
+    if (isTRUE(input$demo_mode)) {
+      score_interp_cache[[key]] <- make_demo_score_interp(r$resort_name)
+      return()
+    }
+
+    req(isTruthy(GROQ_KEY))
 
     # Weather sub-components — isolate so we don't create a new reactive dep;
     # resort_display() has already been evaluated by weather_spark/snapshot_card
